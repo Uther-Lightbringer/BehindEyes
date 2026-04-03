@@ -1,0 +1,55 @@
+{
+  "characters": [
+    {"name": "张三", "aliases": ["张三爷"], "mentions": 5, "description": "初入江湖的年轻剑客"},
+    {"name": "李四", "aliases": [], "mentions": 3, "description": "神秘剑客，剑法无双"},
+    {"name": "王五", "aliases": [], "mentions": 2, "description": "本地恶霸"}
+  ],
+  "events": [
+    {"id": 0, "summary": "张三在长安城街头，听说李四大名", "characters_involved": ["张三"], "chapter": 1, "keywords": ["相遇"]},
+    {"id": 1, "summary": "张三在茶馆偶遇李四，两人互相仰慕", "characters_involved": ["张三", "李四"], "chapter": 1, "keywords": ["对话"]},
+    {"id": 2, "summary": "王五出现，挑衅滋事", "characters_involved": ["王五", "张三"], "chapter": 2, "keywords": ["冲突"]}
+  ],
+  "plot_nodes": [
+    {
+      "id": 0,
+      "content": "你（张三）走在长安城的街道上，人群熙熙攘攘。忽然，你听到有人在议论：'听说最近有个叫李四的剑客，剑法出神入化...'",
+      "choices": [
+        {"text": "上前打听李四的下落", "next_node": 1, "effect": {"reputation": 1}},
+        {"text": "不理会，继续闲逛", "next_node": 2, "effect": {}}
+      ],
+      "next_node": 1,
+      "characters": ["张三"]
+    },
+    {
+      "id": 1,
+      "content": "你来到城中茶馆，意外发现角落有一位气质不凡的剑客——正是李四！他抬头看向你，微微点头。",
+      "choices": [
+        {"text": "上前拱手行礼：'久仰大名！'", "next_node": 3, "effect": {"friendship_lisi": 5}},
+        {"text": "假装不认识，默默观察", "next_node": 3, "effect": {"stealth": 1}}
+      ],
+      "next_node": 3,
+      "characters": ["张三", "李四"]
+    },
+    {
+      "id": 2,
+      "content": "你漫无目的地走着，忽然撞上一个人——是个满脸横肉的大汉，正恶狠狠地盯着你。",
+      "choices": [
+        {"text": "道歉并离开", "next_node": 3, "effect": {}},
+        {"text": "怒目而视：'走路不长眼吗？'", "next_node": -1, "effect": {"hostile_wang": true}}
+      ],
+      "next_node": 3,
+      "characters": ["张三", "王五"]
+    },
+    {
+      "id": 3,
+      "content": "你们相谈甚欢，忽然茶馆门被踹开，一个大汉带着几个手下闯了进来——正是本地的恶霸王五！\n\n'这是我们的地盘，不想死就滚！'王五指着你们吼道。",
+      "choices": [
+        {"text": "拔剑相向：'我不怕你！'", "next_node": -1, "effect": {"combat": true}},
+        {"text": "拉起李四：'我们走！'", "next_node": -1, "effect": {"escaped": true}},
+        {"text": "冷静交涉：'有话好好说'", "next_node": -1, "effect": {"diplomacy": 1}}
+      ],
+      "next_node": -1,
+      "characters": ["张三", "李四", "王五"]
+    }
+  ]
+}
