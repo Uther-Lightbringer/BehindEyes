@@ -20,34 +20,34 @@ PROMPT_EVENT_EXTRACTION = """你是一个专业的剧情分析师。请从以下
 ## 输出格式
 请以JSON格式输出事件列表：
 ```json
-{
+{{
   "events": [
-    {
+    {{
       "name": "事件名称",
       "description": "事件描述",
-      "trigger_conditions": {
+      "trigger_conditions": {{
         "required_flags": ["需要的前置标记"],
         "forbidden_flags": ["不能有的标记"],
         "player_location": "触发地点（可选）"
-      },
-      "effects": {
+      }},
+      "effects": {{
         "set_flags": ["设置的标记"],
         "clear_flags": ["清除的标记"],
-        "character_updates": {
-          "角色名": {
+        "character_updates": {{
+          "角色名": {{
             "location": "新位置",
             "mood": "新情绪",
             "relationship_with_player": 10
-          }
-        },
-        "global_updates": {
+          }}
+        }},
+        "global_updates": {{
           "current_time": "时间",
           "main_quest_stage": "任务阶段"
-        }
-      }
-    }
+        }}
+      }}
+    }}
   ]
-}
+}}
 ```
 
 ## 小说片段
@@ -134,17 +134,42 @@ class EventExtractor:
             elif "```" in response:
                 json_str = response.split("```")[1].split("```")[0]
 
-            data = json.loads(json_str.strip())
+            json_str = json_str.strip()
+
+            # 如果不是以 { 开头，尝试找到 JSON 对象
+            if not json_str.startswith("{"):
+                if "{" in json_str:
+                    json_str = json_str[json_str.find("{"):]
+
+            data = json.loads(json_str)
             return data.get("events", [])
-        except json.JSONDecodeError:
+        except json.JSONDecodeError as e:
+            print(f"Event JSON decode error: {e}")
+            print(f"Response preview: {response[:500]}")
             # 尝试修复常见问题
             try:
                 # 移除可能的注释
-                cleaned = response.replace("//", "")
-                data = json.loads(cleaned)
-                return data.get("events", [])
-            except:
-                return []
+                cleaned = response.replace("//", "").strip()
+                # 尝试找到 JSON 对象
+                if "{" in cleaned and "}" in cleaned:
+                    start = cleaned.find("{")
+                    end = cleaned.rfind("}") + 1
+                    json_str = cleaned[start:end]
+                    data = json.loads(json_str)
+                    return data.get("events", [])
+                else:
+                    # 尝试直接包装成对象
+                    # 处理类似 '\n  "events": [...]' 的情况
+                    if '"events"' in cleaned:
+                        wrapped = "{" + cleaned + "}"
+                        try:
+                            data = json.loads(wrapped)
+                            return data.get("events", [])
+                        except:
+                            pass
+            except Exception as e2:
+                print(f"Event parse fallback also failed: {e2}")
+            return []
 
     async def extract_events_from_segments(
         self,
@@ -154,7 +179,7 @@ class EventExtractor:
         mode: str = "auto"
     ) -> List[Dict[str, Any]]:
         """
-        从多个片段中提取事件
+        从多个片段中提取事件（并发控制，最多5个并发）
 
         Args:
             segments: 片段列表
@@ -165,16 +190,34 @@ class EventExtractor:
         Returns:
             合并后的事件列表
         """
-        all_events = []
+        if mode == "manual":
+            return []
 
-        for segment in segments:
-            events = await self.extract_events(
-                content=segment["content"],
-                characters=characters,
-                novel_id=novel_id,
-                mode=mode
-            )
-            all_events.extend(events)
+        import asyncio
+
+        # 使用信号量限制并发数为 5
+        semaphore = asyncio.Semaphore(5)
+
+        async def extract_with_limit(seg):
+            async with semaphore:
+                return await self.extract_events(
+                    content=seg["content"],
+                    characters=characters,
+                    novel_id=novel_id,
+                    mode=mode
+                )
+
+        # 并行执行所有片段的事件提取
+        tasks = [extract_with_limit(seg) for seg in segments]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # 合并所有事件，过滤掉异常
+        all_events = []
+        for i, r in enumerate(results):
+            if isinstance(r, Exception):
+                print(f"片段 {i} 事件提取失败: {r}")
+            else:
+                all_events.extend(r)
 
         # 去重和合并相似事件
         return self._merge_events(all_events)

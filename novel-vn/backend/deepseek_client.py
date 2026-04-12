@@ -326,6 +326,55 @@ class DeepSeekClient:
     def is_configured(self) -> bool:
         return self.client is not None
 
+    async def _call_api(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        max_tokens: int = 4000,
+        temperature: float = 0.3,
+        timeout: float = 120.0
+    ) -> str:
+        """
+        通用 API 调用方法
+
+        Args:
+            system_prompt: 系统提示词
+            user_prompt: 用户提示词
+            max_tokens: 最大 token 数
+            temperature: 温度参数
+            timeout: 超时时间（秒）
+
+        Returns:
+            AI 响应文本
+        """
+        if not self.client:
+            raise ValueError("AI API 未配置")
+
+        try:
+            response = self.client.chat.completions.create(
+                model="deepseek-chat",
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                temperature=temperature,
+                max_tokens=max_tokens,
+                timeout=timeout,
+                response_format={"type": "json_object"}
+            )
+
+            result = response.choices[0].message.content
+            if not result or not result.strip():
+                raise ValueError("AI 返回空响应")
+
+            result = result.strip()
+            print(f"[_call_api] Response length: {len(result)}, starts with: {result[:50]}")
+            return result
+
+        except Exception as e:
+            print(f"[_call_api] API call failed: {type(e).__name__}: {e}")
+            raise
+
     # ============================================================
     # 阶段1: 生成角色卡片（一次性生成所有角色）
     # ============================================================
@@ -1412,6 +1461,13 @@ class DeepSeekClient:
                 text = parts[1]
 
         text = text.strip()
+
+        # 如果不是以 { 或 [ 开头，尝试找到 JSON 对象
+        if not text.startswith('{') and not text.startswith('['):
+            if '{' in text:
+                text = text[text.find('{'):]
+            elif '[' in text:
+                text = text[text.find('['):]
 
         if text.startswith('{'):
             open_braces = 0

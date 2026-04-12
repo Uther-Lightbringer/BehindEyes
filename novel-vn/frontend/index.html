@@ -71,8 +71,17 @@
         .loading.active { display: flex; }
         .loading-spinner { width: 60px; height: 60px; border: 4px solid #333; border-top-color: #e94560; border-radius: 50%; animation: spin 1s linear infinite; }
         @keyframes spin { to { transform: rotate(360deg); } }
-        .loading-text { margin-top: 20px; font-size: 18px; color: #e94560; }
-        .loading-progress { margin-top: 10px; font-size: 14px; color: #888; }
+        .loading-content { display: flex; flex-direction: column; align-items: center; max-width: 400px; }
+        .loading-text { margin-top: 20px; font-size: 18px; color: #e94560; text-align: center; }
+        .loading-progress-bar { width: 300px; height: 8px; background: #333; border-radius: 4px; margin-top: 15px; overflow: hidden; }
+        .loading-progress-fill { height: 100%; background: linear-gradient(90deg, #e94560, #ff6b6b); border-radius: 4px; transition: width 0.3s ease; width: 0%; }
+        .loading-percent { margin-top: 8px; font-size: 14px; color: #888; }
+        .loading-stages { margin-top: 20px; width: 100%; text-align: left; }
+        .loading-stage { display: flex; align-items: center; gap: 10px; padding: 8px 12px; margin: 4px 0; border-radius: 6px; font-size: 13px; transition: all 0.3s; }
+        .loading-stage.done { color: #50c878; background: rgba(80, 200, 120, 0.1); }
+        .loading-stage.current { color: #e94560; background: rgba(233, 69, 96, 0.15); font-weight: bold; }
+        .loading-stage.pending { color: #666; }
+        .loading-stage-icon { width: 20px; text-align: center; }
 
         /* 角色选择界面 */
         .char-select-screen { display: none; max-width: 900px; margin: 30px auto; padding: 30px; background: #16213e; border-radius: 16px; }
@@ -238,11 +247,20 @@
         </div>
         <div class="form-group" style="text-align: left; margin-bottom: 30px;">
             <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
-                <input type="checkbox" id="enableReview" checked style="width: 18px; height: 18px;">
+                <input type="checkbox" id="enableReview" style="width: 18px; height: 18px;">
                 <span>开启 AI 审阅（自动修复对话中的问题）</span>
             </label>
             <small style="color: #666; margin-left: 30px; display: block; margin-top: 6px;">
-                审阅可以检查 speaker 错误、缺失选择等问题，建议开启
+                审阅可以检查 speaker 错误、缺失选择等问题
+            </small>
+        </div>
+        <div class="form-group" style="text-align: left; margin-bottom: 30px;">
+            <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
+                <input type="checkbox" id="enableImageGeneration" style="width: 18px; height: 18px;">
+                <span>生成角色头像图片</span>
+            </label>
+            <small style="color: #666; margin-left: 30px; display: block; margin-top: 6px;">
+                使用 AI 生成角色头像，需要配置图片服务。不勾选则跳过图片生成。
             </small>
         </div>
         <!-- v0.2 新增：事件提取方式 -->
@@ -263,9 +281,15 @@
 
     <!-- 加载界面 -->
     <div class="loading" id="loadingScreen">
-        <div class="loading-spinner"></div>
-        <div class="loading-text" id="loadingText">正在解析...</div>
-        <div class="loading-progress" id="loadingProgress"></div>
+        <div class="loading-content">
+            <div class="loading-spinner"></div>
+            <div class="loading-text" id="loadingText">正在解析...</div>
+            <div class="loading-progress-bar" id="loadingProgressBar">
+                <div class="loading-progress-fill" id="loadingProgressFill"></div>
+            </div>
+            <div class="loading-percent" id="loadingPercent">0%</div>
+            <div class="loading-stages" id="loadingStages"></div>
+        </div>
     </div>
 
     <!-- 角色选择界面 -->
@@ -387,6 +411,24 @@
         </div>
     </div>
 
+    <!-- v0.2 新增：树状预览模态框 -->
+    <div class="route-map-modal" id="treePreviewModal">
+        <div class="route-map-content" style="max-width:900px;max-height:85vh;">
+            <div class="route-map-header">
+                <h3>剧情分支预览</h3>
+                <button class="close-btn" onclick="rejectTree()">&times;</button>
+            </div>
+            <div style="padding:15px;color:#888;font-size:13px;text-align:center;background:#0f3460;">
+                以下是 AI 生成的剧情分支结构预览。确认后将生成详细的场景内容。
+            </div>
+            <div class="route-map-body" id="treePreviewBody" style="height:400px;"></div>
+            <div style="display:flex;gap:12px;justify-content:center;padding:20px;">
+                <button class="btn btn-primary" id="confirmTreeBtn" onclick="confirmTree()">确认并生成场景</button>
+                <button class="btn btn-secondary" onclick="rejectTree()">重新生成</button>
+            </div>
+        </div>
+    </div>
+
     <div class="route-map-modal" id="loadModal">
         <div class="route-map-content" style="max-width:600px;">
             <div class="route-map-header">
@@ -487,6 +529,7 @@
                 }
 
                 const enableReview = document.getElementById('enableReview').checked;
+                const enableImageGeneration = document.getElementById('enableImageGeneration').checked;
                 const artStyle = document.getElementById('artStyle').value;
                 const styleKeywords = document.getElementById('styleKeywords').value.trim();
                 const eventExtractionMode = document.getElementById('eventExtractionMode')?.value || 'auto';
@@ -500,6 +543,7 @@
                         chapters,
                         visibility: 'public',
                         enable_review: enableReview,
+                        enable_image_generation: enableImageGeneration,
                         art_style: artStyle,
                         style_keywords: styleKeywords,
                         event_extraction_mode: eventExtractionMode
@@ -748,8 +792,8 @@
                     console.log('Status response:', response.status);
                     if (!response.ok) throw new Error('获取状态失败: ' + response.status);
                     const status = await response.json();
-                    console.log('Status:', status.status, status.message);
-                    updateLoading(status.message, status.progress);
+                    console.log('Status:', status.status, status.message, 'step:', status.current_step_num, '/', status.total_steps);
+                    updateLoading(status.message, status.progress, status.current_step_num, status.total_steps);
 
                     if (status.status === 'completed') {
                         console.log('Task completed, fetching result...');
@@ -865,9 +909,13 @@
         }
 
         // ===== 开始游戏（检查缓存/生成场景）=====
+        let currentTreeId = null;  // 当前生成的树ID
+
         async function startPlay() {
             if (!game.selectedCharId) return;
             if (!currentUser) { goToLogin(); return; }
+
+            const generationMode = document.getElementById('generationMode')?.value || 'pregenerate';
 
             const chapter = game.novel.chapters[selectedChapterIndex];
             const runs = chapter.generated_runs || [];
@@ -881,8 +929,353 @@
                 return;
             }
 
-            // 无缓存，直接生成
-            await doGenerate();
+            // 根据生成模式选择流程
+            if (generationMode === 'pregenerate') {
+                // 预生成模式：先生成树结构预览
+                await doGenerateTree();
+            } else {
+                // 实时生成模式：直接开始游戏
+                await doGenerateOldWay();
+            }
+        }
+
+        // 预生成模式：生成树结构
+        async function doGenerateTree() {
+            showLoading('正在生成剧情树结构...');
+            try {
+                const response = await fetch(
+                    `${API_BASE}/novel/${game.novelId}/generate-tree/${selectedChapterIndex}/${game.selectedCharId}`,
+                    { method: 'POST', credentials: 'include' }
+                );
+                if (!response.ok) {
+                    const errData = await response.json().catch(() => null);
+                    if (errData && errData.detail === '请先登录') {
+                        hideLoading();
+                        goToLogin();
+                        return;
+                    }
+                    throw new Error('发起生成任务失败: ' + response.status);
+                }
+
+                const taskInfo = await response.json();
+                updateLoading('AI 正在构建剧情树...');
+
+                const result = await pollTaskStatus(taskInfo.task_id);
+                if (!result.result) throw new Error('生成结果为空');
+
+                const treeData = result.result;
+                currentTreeId = treeData.tree_id;
+
+                // 显示树预览
+                hideLoading();
+                showTreePreview(treeData.tree_data, treeData.node_count);
+
+            } catch (err) {
+                console.error('Tree generation error:', err);
+                document.getElementById('errorMsg').textContent = '生成失败: ' + err.message;
+                hideLoading();
+            }
+        }
+
+        // 显示树预览
+        function showTreePreview(treeData, nodeCount) {
+            const body = document.getElementById('treePreviewBody');
+
+            if (!treeData || !treeData.root) {
+                body.innerHTML = '<div style="text-align:center;color:#888;padding:40px;">树结构为空</div>';
+            } else {
+                body.innerHTML = buildTreePreviewSVG(treeData);
+            }
+
+            document.getElementById('treePreviewModal').classList.add('active');
+        }
+
+        // 构建 SVG 树预览
+        function buildTreePreviewSVG(treeData) {
+            const nodeWidth = 180;
+            const nodeHeight = 70;
+            const hGap = 40;
+            const vGap = 100;
+            const padding = 60;
+
+            // 计算树的布局
+            const positions = [];
+            let maxX = 0, maxY = 0;
+
+            function traverseTree(node, depth, x) {
+                if (!node) return;
+
+                const pos = { x, y: depth * (nodeHeight + vGap) + padding, node };
+                positions.push(pos);
+
+                maxX = Math.max(maxX, x + nodeWidth);
+                maxY = Math.max(maxY, pos.y + nodeHeight);
+
+                const choices = node.choices || [];
+                let childX = x - ((choices.length - 1) * (nodeWidth + hGap)) / 2;
+
+                for (const choice of choices) {
+                    for (const opt of choice.options || []) {
+                        if (opt.child) {
+                            traverseTree(opt.child, depth + 1, childX);
+                            childX += nodeWidth + hGap;
+                        }
+                    }
+                }
+            }
+
+            traverseTree(treeData.root, 0, padding);
+
+            const svgWidth = maxX + padding;
+            const svgHeight = maxY + padding;
+
+            let svg = `<svg width="${svgWidth}" height="${svgHeight}" xmlns="http://www.w3.org/2000/svg">`;
+            svg += `<defs>
+                <marker id="treeArrow" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+                    <polygon points="0 0, 10 3.5, 0 7" fill="#666"/>
+                </marker>
+                <linearGradient id="nodeGradient" x1="0%" y1="0%" x2="0%" y2="100%">
+                    <stop offset="0%" style="stop-color:#1a4a80;stop-opacity:1" />
+                    <stop offset="100%" style="stop-color:#0f3460;stop-opacity:1" />
+                </linearGradient>
+            </defs>`;
+            svg += `<rect x="0" y="0" width="${svgWidth}" height="${svgHeight}" fill="#0a0a1a"/>`;
+
+            // 绘制连线和节点
+            function drawNode(pos) {
+                const node = pos.node;
+                const x = pos.x;
+                const y = pos.y;
+
+                // 绘制节点
+                svg += `<rect x="${x}" y="${y}" width="${nodeWidth}" height="${nodeHeight}"
+                        rx="10" fill="url(#nodeGradient)" stroke="#e94560" stroke-width="2"/>`;
+
+                const preview = node.preview || '';
+                const previewText = preview.length > 20 ? preview.substring(0, 20) + '...' : preview;
+                svg += `<text x="${x + nodeWidth/2}" y="${y + 25}" text-anchor="middle" fill="#fff" font-size="12" font-weight="bold">${node.node_id || '节点'}</text>`;
+                svg += `<text x="${x + nodeWidth/2}" y="${y + 50}" text-anchor="middle" fill="#aaa" font-size="10">${previewText}</text>`;
+
+                // 绘制子节点连线
+                const choices = node.choices || [];
+                let childIndex = 0;
+                for (const choice of choices) {
+                    for (const opt of choice.options || []) {
+                        if (opt.child) {
+                            const childPos = positions.find(p => p.node.node_id === opt.child.node_id);
+                            if (childPos) {
+                                const x1 = x + nodeWidth / 2;
+                                const y1 = y + nodeHeight;
+                                const x2 = childPos.x + nodeWidth / 2;
+                                const y2 = childPos.y;
+                                svg += `<path d="M${x1},${y1} C${x1},${(y1+y2)/2} ${x2},${(y1+y2)/2} ${x2},${y2}"
+                                        stroke="#555" stroke-width="2" fill="none" marker-end="url(#treeArrow)"/>`;
+
+                                // 绘制选项标签
+                                const labelText = opt.text?.substring(0, 10) || '选项';
+                                const labelX = (x1 + x2) / 2;
+                                const labelY = (y1 + y2) / 2 - 10;
+                                svg += `<rect x="${labelX - 40}" y="${labelY - 10}" width="80" height="20" rx="10" fill="#e94560"/>`;
+                                svg += `<text x="${labelX}" y="${labelY + 4}" text-anchor="middle" fill="white" font-size="10">${labelText}</text>`;
+                            }
+                            childIndex++;
+                        }
+                    }
+                }
+
+                // 递归绘制子节点
+                for (const choice of choices) {
+                    for (const opt of choice.options || []) {
+                        if (opt.child) {
+                            const childPos = positions.find(p => p.node.node_id === opt.child.node_id);
+                            if (childPos) drawNode(childPos);
+                        }
+                    }
+                }
+            }
+
+            drawNode(positions[0]);
+
+            svg += '</svg>';
+            return svg;
+        }
+
+        // 确认树结构
+        async function confirmTree() {
+            if (!currentTreeId) return;
+
+            document.getElementById('treePreviewModal').classList.remove('active');
+            showLoading('正在生成场景内容...');
+
+            try {
+                const response = await fetch(
+                    `${API_BASE}/novel/${game.novelId}/confirm-tree/${currentTreeId}`,
+                    { method: 'POST', credentials: 'include' }
+                );
+
+                if (!response.ok) throw new Error('确认失败');
+
+                const taskInfo = await response.json();
+                updateLoading('AI 正在生成场景内容...');
+
+                const result = await pollTaskStatus(taskInfo.task_id);
+                if (!result.result) throw new Error('生成结果为空');
+
+                // 获取生成的节点并开始游戏
+                await startGameWithNodes();
+
+            } catch (err) {
+                console.error('Confirm tree error:', err);
+                alert('生成场景失败: ' + err.message);
+                hideLoading();
+            }
+        }
+
+        // 拒绝树结构
+        async function rejectTree() {
+            document.getElementById('treePreviewModal').classList.remove('active');
+
+            if (currentTreeId) {
+                try {
+                    await fetch(
+                        `${API_BASE}/novel/${game.novelId}/reject-tree/${currentTreeId}`,
+                        { method: 'POST', credentials: 'include' }
+                    );
+                } catch (e) {}
+            }
+
+            currentTreeId = null;
+            // 可以重新生成
+        }
+
+        // 使用节点数据开始游戏
+        async function startGameWithNodes() {
+            try {
+                // 创建游戏状态
+                const startRes = await fetch(`${API_BASE}/game/start`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include',
+                    body: JSON.stringify({
+                        novel_id: game.novelId,
+                        chapter_index: selectedChapterIndex,
+                        character_id: game.selectedCharId
+                    })
+                });
+
+                if (!startRes.ok) throw new Error('创建游戏状态失败');
+
+                const gameData = await startRes.json();
+                gameStateId = gameData.state_id;
+
+                // 获取第一个节点的数据
+                const nodeData = gameData.current_node;
+
+                // 如果场景数据为空，显示等待
+                if (!nodeData.scene_data) {
+                    hideLoading();
+                    alert('场景内容生成中，请稍后再试');
+                    return;
+                }
+
+                // 初始化游戏数据
+                game.scenes = [nodeData.scene_data];
+                game.playerCharName = getSelectedCharName();
+                game.currentScene = 0;
+                game.currentDialogue = 0;
+                game.currentNode = nodeData;  // 保存当前节点信息
+
+                // 转换 choices 格式：新格式 -> 旧格式兼容
+                // 新格式: [{choice_id, prompt, options: [{text, next_node, effects}]}]
+                // 旧格式: [{at_scene, prompt, options: [{text, next_scene, effect}]}]
+                game.choices = convertChoicesFormat(nodeData.choices || [], 0);
+
+                game.totalDialogues = (nodeData.scene_data.dialogues || []).length;
+
+                const chapter = game.novel.chapters[selectedChapterIndex];
+                document.getElementById('chapterTitle').textContent = chapter.title;
+                document.getElementById('charSelectScreen').classList.remove('active');
+                document.getElementById('gameScreen').classList.add('active');
+                document.getElementById('chapterEnd').classList.remove('active');
+
+                hideLoading();
+                renderCharacters();
+                showCurrentDialogue();
+
+            } catch (err) {
+                console.error('Start game error:', err);
+                alert('开始游戏失败: ' + err.message);
+                hideLoading();
+            }
+        }
+
+        // 转换 choices 格式
+        function convertChoicesFormat(newChoices, sceneIndex) {
+            if (!newChoices || !Array.isArray(newChoices)) return [];
+
+            return newChoices.map(choice => ({
+                at_scene: sceneIndex,
+                prompt: choice.prompt || '请做出选择',
+                choice_id: choice.choice_id,  // 保留用于 V2 API
+                options: (choice.options || []).map(opt => ({
+                    text: opt.text,
+                    next_scene: opt.next_node ? parseInt(opt.next_node.replace(/\D/g, '')) || sceneIndex + 1 : sceneIndex + 1,
+                    next_node: opt.next_node,  // 保留节点ID用于 V2 API
+                    route: opt.route || 'main',
+                    effect: opt.effects || {}
+                }))
+            }));
+        }
+
+        // 存储当前节点信息
+        game.currentNode = null;
+
+        // 旧方式生成（实时模式兼容）
+        async function doGenerateOldWay() {
+            showLoading(`正在以${getSelectedCharName()}视角生成场景...`);
+            try {
+                const response = await fetch(
+                    `${API_BASE}/generate/${game.novelId}/${selectedChapterIndex}/${game.selectedCharId}`,
+                    { method: 'POST', credentials: 'include' }
+                );
+                if (!response.ok) {
+                    const errData = await response.json().catch(() => null);
+                    if (errData && errData.detail === '请先登录') {
+                        hideLoading();
+                        goToLogin();
+                        return;
+                    }
+                    const text = await response.text();
+                    throw new Error('发起生成任务失败: ' + response.status + ' ' + text);
+                }
+
+                const text = await response.text();
+                const taskInfo = JSON.parse(text);
+                updateLoading('AI生成中... task_id=' + taskInfo.task_id);
+
+                try {
+                    const result = await pollTaskStatus(taskInfo.task_id);
+                    if (!result.result) throw new Error('生成结果为空');
+
+                    const generated = result.result;
+                    game.novel.chapters[selectedChapterIndex].generated_scenes = generated;
+                    game.novel.chapters[selectedChapterIndex].player_character_id = game.selectedCharId;
+                    initGame();
+                } catch (err) {
+                    console.error('Poll or init error:', err);
+                    document.getElementById('errorMsg').textContent = '生成失败: ' + err.message;
+                    hideLoading();
+                }
+            } catch (err) {
+                console.error(err);
+                document.getElementById('errorMsg').textContent = '生成失败: ' + err.message;
+                hideLoading();
+            }
+        }
+
+        // 兼容旧代码的别名
+        async function doGenerate() {
+            await doGenerateOldWay();
         }
 
         // 使用已有缓存
@@ -1075,9 +1468,31 @@
 
             const dialogues = scene.dialogues || [];
             if (game.currentDialogue >= dialogues.length) {
+                // 查找当前场景的 choices
+                // V2 模式：choices 通过 at_scene 关联
+                // V1 模式：同样通过 at_scene 关联
                 const choice = game.choices.find(c => c.at_scene === game.currentScene);
                 if (choice) { showChoices(choice); }
-                else { transitionToNextScene(); }
+                else {
+                    // 没有选择，检查是否是 V2 模式的最后一个场景
+                    if (gameStateId && game.currentNode) {
+                        // V2 模式：检查当前节点是否还有后续
+                        const nodeChoices = game.currentNode.choices || [];
+                        if (nodeChoices.length === 0) {
+                            showChapterEnd();
+                        } else {
+                            // 尝试使用节点的 choices
+                            const convertedChoice = convertChoicesFormat(nodeChoices, game.currentScene)[0];
+                            if (convertedChoice) {
+                                showChoices(convertedChoice);
+                            } else {
+                                showChapterEnd();
+                            }
+                        }
+                    } else {
+                        transitionToNextScene();
+                    }
+                }
                 return;
             }
 
@@ -1155,8 +1570,12 @@
             const panel = document.getElementById('choicePanel');
             document.getElementById('choicePrompt').textContent = choice.prompt || '请做出选择';
 
+            // 保存当前 choice 用于 V2 API
+            const currentChoiceId = choice.choice_id;
+            const useV2 = gameStateId && currentChoiceId;
+
             document.getElementById('choiceList').innerHTML = choice.options.map((opt, i) => `
-                <button class="choice-btn" onclick="makeChoice(${i})">
+                <button class="choice-btn" onclick="${useV2 ? `makeChoiceV2('${currentChoiceId}', ${i})` : `makeChoice(${i})`}">
                     ${opt.text}
                     ${opt.effect ? `<div class="choice-effect">${formatEffect(opt.effect)}</div>` : ''}
                 </button>
@@ -1189,6 +1608,70 @@
             }
             game.isWaiting = true;
             showCurrentDialogue();
+        }
+
+        // v0.2: 使用状态机 API 做出选择
+        async function makeChoiceV2(choiceId, optionIndex) {
+            if (!gameStateId) {
+                // 降级到旧方式
+                makeChoice(optionIndex);
+                return;
+            }
+
+            try {
+                const res = await fetch(`${API_BASE}/game/${gameStateId}/choose`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include',
+                    body: JSON.stringify({
+                        choice_id: choiceId,
+                        option_index: optionIndex
+                    })
+                });
+
+                if (!res.ok) throw new Error('选择失败');
+
+                const data = await res.json();
+
+                // 更新本地状态
+                game.route = data.state?.current_route || game.route;
+                game.flags = data.state?.flags || {};
+
+                // 更新当前节点
+                if (data.next_node) {
+                    game.currentNode = data.next_node;
+
+                    // 更新场景数据
+                    if (data.next_node.scene_data) {
+                        // 添加新场景到数组
+                        game.scenes.push(data.next_node.scene_data);
+                        game.currentScene = game.scenes.length - 1;
+                        game.currentDialogue = 0;
+
+                        // 更新对话总数
+                        game.totalDialogues += (data.next_node.scene_data.dialogues || []).length;
+                    }
+
+                    // 更新 choices（转换格式）
+                    game.choices = convertChoicesFormat(data.next_node.choices || [], game.currentScene);
+                }
+
+                game.isWaiting = true;
+
+                // 显示场景过渡动画
+                const transition = document.getElementById('sceneTransition');
+                transition.classList.add('active');
+
+                setTimeout(() => {
+                    renderCharacters();
+                    showCurrentDialogue();
+                    setTimeout(() => transition.classList.remove('active'), 300);
+                }, 500);
+
+            } catch (err) {
+                console.error('Make choice v2 error:', err);
+                alert('选择处理失败: ' + err.message);
+            }
         }
 
         function showChapterEnd() {
@@ -1742,12 +2225,66 @@
             return labels[route] || route;
         }
 
+        // 解析阶段定义
+        const PARSE_STAGES = [
+            { id: "split_segments", name: "拆分章节片段" },
+            { id: "extract_characters", name: "提取角色信息" },
+            { id: "merge_characters", name: "合并角色卡" },
+            { id: "link_characters", name: "关联角色到章节" },
+            { id: "extract_events", name: "提取事件定义" },
+            { id: "generate_avatars", name: "生成角色头像" },
+        ];
+
         function showLoading(text) {
             document.getElementById('uploadScreen').style.display = 'none';
             document.getElementById('charSelectScreen').classList.remove('active');
             document.getElementById('loadingScreen').classList.add('active');
             document.getElementById('loadingText').textContent = text;
-            document.getElementById('loadingProgress').textContent = '';
+            document.getElementById('loadingProgressFill').style.width = '0%';
+            document.getElementById('loadingPercent').textContent = '0%';
+            renderLoadingStages(0);
+        }
+
+        function updateLoading(text, progress, currentStepNum, totalSteps) {
+            document.getElementById('loadingText').textContent = text;
+
+            // 更新进度条
+            const pct = Math.round((progress || 0) * 100);
+            document.getElementById('loadingProgressFill').style.width = `${pct}%`;
+            document.getElementById('loadingPercent').textContent = `${pct}%`;
+
+            // 更新步骤列表
+            if (currentStepNum && totalSteps) {
+                renderLoadingStages(currentStepNum, totalSteps);
+            }
+        }
+
+        function renderLoadingStages(currentStepNum, totalSteps) {
+            const stagesEl = document.getElementById('loadingStages');
+            const stageCount = totalSteps || PARSE_STAGES.length;
+
+            let html = '';
+            for (let i = 0; i < stageCount; i++) {
+                let status, icon;
+                if (i < currentStepNum - 1) {
+                    status = 'done';
+                    icon = '✓';
+                } else if (i === currentStepNum - 1) {
+                    status = 'current';
+                    icon = '●';
+                } else {
+                    status = 'pending';
+                    icon = '○';
+                }
+
+                const stageName = PARSE_STAGES[i]?.name || `步骤 ${i + 1}`;
+                html += `<div class="loading-stage ${status}">
+                    <span class="loading-stage-icon">${icon}</span>
+                    <span>${stageName}</span>
+                </div>`;
+            }
+
+            stagesEl.innerHTML = html;
         }
 
         // 登录跳转检查：检查 URL 上的 ?return= 参数
@@ -1765,24 +2302,6 @@
                         }, 500);
                     }
                 } catch(e) {}
-            }
-        }
-
-        function updateLoading(text, progress) {
-            document.getElementById('loadingText').textContent = text;
-            const progEl = document.getElementById('loadingProgress');
-            if (progress !== null && progress !== undefined && progress >= 0 && progress <= 1) {
-                const pct = Math.round(progress * 100);
-                progEl.style.width = '200px';
-                progEl.style.background = '#333';
-                progEl.style.borderRadius = '4px';
-                progEl.style.overflow = 'hidden';
-                progEl.style.height = '8px';
-                progEl.style.margin = '0 auto';
-                progEl.innerHTML = `<div style="height:100%;width:${pct}%;background:#e94560;transition:width 0.3s;border-radius:4px;"></div>`;
-                progEl.textContent = `${pct}%`;
-            } else {
-                progEl.textContent = '';
             }
         }
 

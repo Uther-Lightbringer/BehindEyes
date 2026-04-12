@@ -636,6 +636,7 @@ class Database:
         progress: Optional[float] = None,
         current_step: Optional[str] = None,
         current_step_num: Optional[int] = None,
+        total_steps: Optional[int] = None,
         message: Optional[str] = None,
         result: Optional[Dict[str, Any]] = None,
         error: Optional[str] = None,
@@ -654,6 +655,9 @@ class Database:
         if current_step_num is not None:
             fields.append("current_step_num = ?")
             values.append(current_step_num)
+        if total_steps is not None:
+            fields.append("total_steps = ?")
+            values.append(total_steps)
         if message is not None:
             fields.append("message = ?")
             values.append(message)
@@ -1144,9 +1148,36 @@ class Database:
         """更新节点的场景数据"""
         conn = self._get_conn()
         conn.execute(
-            "UPDATE story_nodes SET scene_data = ? WHERE id = ?",
+            "UPDATE story_nodes SET scene_data = ?, needs_generation = 0 WHERE id = ?",
             (json.dumps(scene_data, ensure_ascii=False), node_pk),
         )
+        conn.commit()
+        conn.close()
+
+    def update_story_node_events(self, node_pk: str, event_ids: List[str]) -> None:
+        """更新节点关联的事件列表"""
+        conn = self._get_conn()
+        conn.execute(
+            "UPDATE story_nodes SET possible_events = ? WHERE id = ?",
+            (json.dumps(event_ids, ensure_ascii=False), node_pk),
+        )
+        conn.commit()
+        conn.close()
+
+    def update_story_node_choices(self, node_pk: str, choices: List[Dict]) -> None:
+        """更新节点的选择列表"""
+        conn = self._get_conn()
+        conn.execute(
+            "UPDATE story_nodes SET choices = ? WHERE id = ?",
+            (json.dumps(choices, ensure_ascii=False), node_pk),
+        )
+        conn.commit()
+        conn.close()
+
+    def delete_story_node(self, node_pk: str) -> None:
+        """删除单个节点"""
+        conn = self._get_conn()
+        conn.execute("DELETE FROM story_nodes WHERE id = ?", (node_pk,))
         conn.commit()
         conn.close()
 

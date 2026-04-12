@@ -522,24 +522,38 @@ class NodeNavigator:
             return None
         return StoryNode.from_dict(node_data)
 
-    def get_available_choices(self, state: GameState) -> List[StoryChoice]:
+    def get_available_choices(self, state: GameState) -> List[Dict]:
         """获取可用选择"""
-        choices_data = db.get_story_choices_by_node(state.novel_id, state.current_node_id)
-        choices = []
-        for cd in choices_data:
-            choice = StoryChoice.from_dict(cd)
-            # 过滤显示条件
+        # 从 story_nodes 表获取当前节点的 choices
+        node_data = db.get_story_node_by_node_id(state.novel_id, state.current_node_id)
+        if not node_data:
+            return []
+
+        # 获取 choices（可能是 JSON 字符串或列表）
+        choices_raw = node_data.get("choices", "[]")
+        if isinstance(choices_raw, str):
+            choices = json.loads(choices_raw)
+        else:
+            choices = choices_raw
+
+        # 过滤显示条件
+        result = []
+        for choice in choices:
             visible_options = []
-            for opt in choice.options:
-                if opt.show_condition:
-                    if self._check_show_condition(state, opt.show_condition):
+            for opt in choice.get("options", []):
+                show_condition = opt.get("show_condition")
+                if show_condition:
+                    if self._check_show_condition(state, show_condition):
                         visible_options.append(opt)
                 else:
                     visible_options.append(opt)
+
             if visible_options:
-                choice.options = visible_options
-                choices.append(choice)
-        return choices
+                choice_copy = dict(choice)
+                choice_copy["options"] = visible_options
+                result.append(choice_copy)
+
+        return result
 
     def _check_show_condition(self, state: GameState, condition: Dict) -> bool:
         """检查选项显示条件"""
@@ -561,18 +575,33 @@ class NodeNavigator:
         option_index: int
     ) -> GameState:
         """导航到下一个节点"""
-        # 获取选择
-        choices = db.get_story_choices_by_node(state.novel_id, state.current_node_id)
+        # 从 story_nodes 表获取当前节点的 choices
+        node_data = db.get_story_node_by_node_id(state.novel_id, state.current_node_id)
+        if not node_data:
+            raise ValueError(f"Node {state.current_node_id} not found")
+
+        # 获取 choices（可能是 JSON 字符串或列表）
+        choices_raw = node_data.get("choices", "[]")
+        if isinstance(choices_raw, str):
+            choices = json.loads(choices_raw)
+        else:
+            choices = choices_raw
+
+        # 找到指定的 choice
         choice_data = None
         for c in choices:
-            if c["choice_id"] == choice_id:
+            if c.get("choice_id") == choice_id:
                 choice_data = c
                 break
 
         if not choice_data:
-            raise ValueError(f"Choice {choice_id} not found at node {state.current_node_id}")
+            # 如果没有找到 choice_id，尝试用索引
+            if choices and len(choices) > 0:
+                choice_data = choices[0]
+            else:
+                raise ValueError(f"Choice {choice_id} not found at node {state.current_node_id}")
 
-        options = json.loads(choice_data["options"]) if isinstance(choice_data["options"], str) else choice_data["options"]
+        options = choice_data.get("options", [])
         if option_index >= len(options):
             raise ValueError(f"Option index {option_index} out of range")
 

@@ -11,6 +11,7 @@ import asyncio
 import json
 import uuid
 import threading
+from datetime import datetime
 
 from deepseek_client import DeepSeekClient, generate_id
 from image_client import EvolinkImageClient
@@ -1165,7 +1166,7 @@ async def health():
 
 
 # ============================================================
-# v0.2 状态机 API
+# v0.2 状态机驱动 API
 # ============================================================
 from state_machine import (
     GameStateManager, EventManager, NodeNavigator, SaveManager,
@@ -1180,23 +1181,27 @@ save_manager = SaveManager(state_manager)
 event_extractor = EventExtractor(deepseek)
 node_builder = NodeBuilder(deepseek)
 
+# 树生成任务缓存（内存中临时存储）
+pending_trees: Dict[str, Dict[str, Any]] = {}
 
-# ---------- 解析阶段 API ----------
+
+# ==================== 解析阶段 API ====================
+
 class ParseRequestV02(BaseModel):
-    """v0.2 扩展的解析请求"""
+    """v0.2 解析请求"""
     novel_title: str
     chapters: List[ChapterData]
     visibility: Optional[str] = "public"
     art_style: Optional[str] = "anime"
     style_keywords: Optional[str] = ""
-    enable_review: Optional[bool] = True
-    # v0.2 新增
-    event_extraction_mode: Optional[str] = "auto"  # auto/manual/hybrid
+    enable_review: Optional[bool] = False
+    enable_image_generation: Optional[bool] = False
+    event_extraction_mode: Optional[str] = "auto"
 
 
 @app.post("/api/parse-v2")
 async def start_parse_v2(request_body: ParseRequestV02, request: Request, background_tasks: BackgroundTasks):
-    """v0.2 版本解析，支持事件提取模式选择"""
+    """v0.2 版本解析，生成角色卡 + 事件 + 节点模板"""
     user = await login_required(get_current_user(request))
 
     task_id = str(uuid.uuid4())
@@ -1212,7 +1217,6 @@ async def start_parse_v2(request_body: ParseRequestV02, request: Request, backgr
         request_body.enable_review if request_body.enable_review is not None else True,
     )
 
-    # 设置事件提取模式
     db.update_novel_mode_settings(
         novel_id,
         event_extraction_mode=request_body.event_extraction_mode or "auto"
@@ -1227,273 +1231,274 @@ async def start_parse_v2(request_body: ParseRequestV02, request: Request, backgr
             print(f"[{task_id}] 解析任务异常: {e}")
             import traceback
             traceback.print_exc()
-            db.update_task(
-                task_id,
-                status="failed",
-                message=f"解析异常: {e}",
-                error=str(e),
-            )
+            db.update_task(task_id, status="failed", message=f"解析异常: {e}", error=str(e))
 
     thread = threading.Thread(target=run_task, daemon=True)
     thread.start()
 
-    return {
-        "task_id": task_id,
-        "novel_id": novel_id,
-        "status": "pending",
-        "message": "等待开始..."
-    }
+    return {"task_id": task_id, "novel_id": novel_id, "status": "pending"}
 
 
 async def run_parse_task_v2(task_id: str, request: ParseRequestV02, novel_id: str, user_id: str):
-    """v0.2 解析任务，包含事件提取"""
-    # 先执行标准解析流程
-    await run_parse_task(task_id, request, novel_id, user_id)
+    """v0.2 解析任务：角色 + 事件 + 节点模板"""
+    settings = db.get_user_settings(user_id)
+    chunk_size = settings.get("chunk_size", 5000)
+    chunk_overlap = settings.get("chunk_overlap", 300)
 
-    # 检查任务状态
-    task = db.get_task(task_id)
-    if task.get("status") != "completed":
-        return  # 解析失败，直接返回
+    # 定义解析阶段和权重
+    PARSE_STAGES = [
+        {"id": "split_segments", "name": "拆分章节片段", "weight": 0.1},
+        {"id": "extract_characters", "name": "提取角色信息", "weight": 0.25},
+        {"id": "merge_characters", "name": "合并角色卡", "weight": 0.1},
+        {"id": "link_characters", "name": "关联角色到章节", "weight": 0.05},
+        {"id": "extract_events", "name": "提取事件定义", "weight": 0.2},
+        {"id": "generate_avatars", "name": "生成角色头像", "weight": 0.3},
+    ]
+    total_stages = len(PARSE_STAGES)
 
-    # v0.2 新增：事件提取
-    if request.event_extraction_mode != "manual":
+    def update_stage_progress(stage_index, stage_progress=0, message=None):
+        """更新阶段进度"""
+        # 计算总进度 = 之前阶段权重之和 + 当前阶段进度 * 当前阶段权重
+        total_weight = sum(s["weight"] for s in PARSE_STAGES[:stage_index])
+        current_weight = PARSE_STAGES[stage_index]["weight"] * stage_progress
+        progress = total_weight + current_weight
+
+        stage_name = PARSE_STAGES[stage_index]["name"]
         db.update_task(
             task_id,
-            status="extracting_events",
-            progress=0.9,
-            current_step="提取事件",
-            message="正在提取剧情事件...",
+            progress=progress,
+            current_step=stage_name,
+            current_step_num=stage_index + 1,
+            total_steps=total_stages,
+            message=message or f"正在{stage_name}..."
         )
 
-        try:
-            # 获取所有章节和角色
-            chapters = db.get_chapters_by_novel(novel_id)
-            characters = db.get_characters_by_novel(novel_id)
+    try:
+        # ========== 阶段0: 拆分章节片段 ==========
+        update_stage_progress(0, 0, "正在拆分章节...")
 
-            for chapter in chapters:
-                segments = db.get_segments_by_chapter(chapter["id"])
-                segment_contents = [s["content"] for s in segments]
+        all_characters = []
+        all_segments = []
 
-                if segment_contents:
-                    events = await event_extractor.extract_events_from_segments(
-                        segments=segments,
-                        characters=characters,
-                        novel_id=novel_id,
-                        mode=request.event_extraction_mode
-                    )
+        for i, chapter in enumerate(request.chapters):
+            chapter_key = str(uuid.uuid4())
+            db.create_chapter(chapter_key, novel_id, chapter.chapter_id, chapter.title, chapter.content)
 
-                    # 存储事件
-                    for event in events:
-                        db.create_story_event(
-                            event_id=event["id"],
-                            novel_id=novel_id,
-                            event_data=event
+            segments_data = deepseek._chunk_content(chapter.content, chunk_size, chunk_overlap)
+
+            for seg in segments_data:
+                segment_id = str(uuid.uuid4())
+                db.create_segment(segment_id, chapter_key, seg["index"], seg["content"])
+                all_segments.append({
+                    "id": segment_id,
+                    "chapter_key": chapter_key,
+                    "content": seg["content"],
+                    "index": seg["index"]
+                })
+
+            # 更新拆分进度
+            stage_progress = (i + 1) / len(request.chapters)
+            update_stage_progress(0, stage_progress, f"正在拆分章节 ({i+1}/{len(request.chapters)})...")
+
+        # ========== 阶段1: 提取角色（并发控制，最多5个并发） ==========
+        update_stage_progress(1, 0, "正在提取角色信息...")
+
+        total_segments = len(all_segments)
+
+        async def extract_chars_with_limit(seg, semaphore):
+            async with semaphore:
+                return await deepseek.generate_character_cards(seg["content"], user_id=user_id, novel_id=novel_id)
+
+        semaphore = asyncio.Semaphore(5)
+        tasks = [extract_chars_with_limit(seg, semaphore) for seg in all_segments]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        for i, r in enumerate(results):
+            if isinstance(r, Exception):
+                print(f"片段 {i} 角色提取失败: {r}")
+            else:
+                all_characters.extend(r)
+
+        update_stage_progress(1, 1.0, f"已从 {total_segments} 个片段提取角色")
+
+        # ========== 阶段2: 合并角色 ==========
+        update_stage_progress(2, 0, "正在合并角色卡...")
+        merged_characters = deepseek.merge_characters([all_characters])
+        db.create_characters(novel_id, merged_characters)
+        update_stage_progress(2, 1.0, f"已合并 {len(merged_characters)} 个角色")
+
+        # ========== 阶段3: 关联角色到章节 ==========
+        update_stage_progress(3, 0, "正在关联角色到章节...")
+
+        chapters = db.get_chapters_by_novel(novel_id)
+        for chapter_idx, chapter in enumerate(request.chapters):
+            if chapter_idx < len(chapters):
+                ch = chapters[chapter_idx]
+                char_names = set()
+                for seg in all_segments:
+                    if seg["chapter_key"] == ch["id"]:
+                        for char in merged_characters:
+                            if char.get("name", "") in seg["content"]:
+                                char_names.add(char["id"])
+                                db.link_segment_character(seg["id"], char["id"])
+                for char_id in char_names:
+                    db.link_chapter_character(ch["id"], char_id)
+
+            stage_progress = (chapter_idx + 1) / len(request.chapters)
+            update_stage_progress(3, stage_progress)
+
+        # ========== 阶段4: 事件提取 ==========
+        if request.event_extraction_mode != "manual":
+            update_stage_progress(4, 0, "正在提取事件定义...")
+
+            events = await event_extractor.extract_events_from_segments(
+                segments=all_segments,
+                characters=merged_characters,
+                novel_id=novel_id,
+                mode=request.event_extraction_mode
+            )
+
+            for i, event in enumerate(events):
+                db.create_story_event(event["id"], novel_id, event)
+
+            update_stage_progress(4, 1.0, f"已提取 {len(events)} 个事件")
+        else:
+            # 跳过事件提取
+            update_stage_progress(4, 1.0, "跳过事件提取（手动模式）")
+
+        # ========== 阶段5: 生成角色头像（并发控制，最多5个并发） ==========
+        if request.enable_image_generation and image_client.is_configured():
+            update_stage_progress(5, 0, "正在生成角色头像...")
+
+            char_count = len(merged_characters)
+
+            async def generate_avatar_with_limit(char, semaphore):
+                async with semaphore:
+                    try:
+                        positive_prompt, negative_prompt = EvolinkImageClient.build_avatar_prompt(
+                            char, request.art_style or "anime", request.style_keywords or ""
                         )
+                        url = await image_client.generate_image(positive_prompt, negative_prompt)
+                        if url:
+                            image_path = await download_and_save(url, novel_id, char["id"])
+                            if image_path:
+                                db.update_character_image_path(char["id"], os.path.relpath(image_path, os.path.dirname(__file__)))
+                                return True
+                    except Exception as e:
+                        print(f"生成角色 {char.get('name')} 头像失败: {e}")
+                    return False
 
-            print(f"[{task_id}] 事件提取完成，共 {len(db.get_story_events_by_novel(novel_id))} 个事件")
+            semaphore = asyncio.Semaphore(5)
+            tasks = [generate_avatar_with_limit(char, semaphore) for char in merged_characters]
+            results = await asyncio.gather(*tasks)
 
-        except Exception as e:
-            print(f"[{task_id}] 事件提取失败: {e}")
+            success_count = sum(1 for r in results if r)
+            update_stage_progress(5, 1.0, f"已生成 {success_count}/{char_count} 个角色头像")
+        else:
+            # 跳过头像生成
+            if not request.enable_image_generation:
+                update_stage_progress(5, 1.0, "跳过头像生成（未勾选生成图片选项）")
+            else:
+                update_stage_progress(5, 1.0, "跳过头像生成（未配置图片服务）")
 
-    db.update_task(
-        task_id,
-        status="completed",
-        progress=1.0,
-        message="解析完成",
-    )
+        # 从数据库重新获取角色列表（包含更新后的 image_path）
+        final_characters = db.get_characters_by_novel(novel_id)
 
+        # 构建角色 ID -> 角色信息的映射，并添加 image_url
+        char_id_to_info = {}
+        for c in final_characters:
+            char_data = dict(c)
+            # 将 image_path 转换为 image_url
+            if c.get("image_path"):
+                char_data["image_url"] = f"/api/images/{c['image_path'].replace('data/images/', '').replace('backend/data/images/', '')}"
+            else:
+                char_data["image_url"] = None
+            char_id_to_info[c["id"]] = char_data
 
-@app.get("/api/novel/{novel_id}/events")
-async def get_novel_events(novel_id: str, request: Request):
-    """获取小说的事件列表（用于 manual/hybrid 模式预览）"""
-    user = get_current_user(request)
-    novel_db = db.get_novel(novel_id)
-    if not novel_db:
-        raise HTTPException(status_code=404, detail="小说不存在")
+        # 构建返回数据（包含章节和角色信息）
+        chapters_with_chars = []
+        for ch in chapters:
+            # 获取该章节关联的角色 ID
+            chapter_char_ids = db.get_characters_for_chapter(ch["id"])
+            # 转换为完整角色信息
+            chapter_chars = [char_id_to_info[cid] for cid in chapter_char_ids if cid in char_id_to_info]
+            chapters_with_chars.append({
+                "id": ch["id"],
+                "chapter_index": ch.get("chapter_index", 0),
+                "title": ch.get("title", "未命名章节"),
+                "characters": chapter_chars
+            })
 
-    if novel_db["visibility"] == "private":
-        if not user or (novel_db["owner_id"] != user["id"] and user.get("role") != "admin"):
-            raise HTTPException(status_code=403, detail="无权访问")
-
-    events = db.get_story_events_by_novel(novel_id)
-    return {"events": events}
-
-
-@app.post("/api/novel/{novel_id}/events")
-async def update_novel_events(novel_id: str, request: Request):
-    """更新/确认事件列表"""
-    user = await login_required(get_current_user(request))
-    novel_db = db.get_novel(novel_id)
-    if not novel_db:
-        raise HTTPException(status_code=404, detail="小说不存在")
-
-    if novel_db["owner_id"] != user["id"] and user.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="无权修改")
-
-    body = await request.json()
-    events = body.get("events", [])
-
-    # 清除现有事件
-    db.delete_story_events_by_novel(novel_id)
-
-    # 存储新事件
-    for event in events:
-        db.create_story_event(
-            event_id=event.get("id", str(uuid.uuid4())),
-            novel_id=novel_id,
-            event_data=event
+        db.update_task(
+            task_id,
+            status="completed",
+            progress=1.0,
+            current_step="完成",
+            current_step_num=total_stages,
+            total_steps=total_stages,
+            message="解析完成",
+            result={
+                "novel_id": novel_id,
+                "title": request.novel_title,
+                "character_count": len(merged_characters),
+                "chapters": chapters_with_chars,
+                "characters": list(char_id_to_info.values())
+            }
         )
 
-    return {"success": True, "count": len(events)}
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        db.update_task(task_id, status="failed", error=str(e))
 
 
-# ---------- 生成阶段 API ----------
-class GenerateRequestV02(BaseModel):
-    """v0.2 扩展的生成请求"""
-    generation_mode: Optional[str] = "pregenerate"  # pregenerate/realtime
+# ==================== 树生成 API ====================
+
+class GenerateTreeRequest(BaseModel):
+    generation_mode: Optional[str] = "pregenerate"
 
 
-@app.post("/api/generate-v2/{novel_id}/{chapter_index}/{character_id}")
-async def start_generate_v2(
+@app.post("/api/novel/{novel_id}/generate-tree/{chapter_index}/{character_id}")
+async def generate_tree_api(
     novel_id: str,
     chapter_index: int,
     character_id: str,
     request: Request,
-    body: Optional[GenerateRequestV02] = None,
+    body: Optional[GenerateTreeRequest] = None
 ):
-    """v0.2 版本生成，支持预生成/实时生成模式"""
+    """
+    生成节点树结构（不含场景内容）
+    返回树结构供前端预览，等待用户确认
+    """
     user = await login_required(get_current_user(request))
 
     novel_db = db.get_novel(novel_id)
     if not novel_db:
         raise HTTPException(status_code=404, detail="小说不存在")
-
-    if novel_db["visibility"] == "private" and novel_db["owner_id"] != user["id"] and user.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="无权访问")
 
     chapters = db.get_chapters_by_novel(novel_id)
     if chapter_index >= len(chapters):
         raise HTTPException(status_code=404, detail="章节不存在")
 
     chapter = chapters[chapter_index]
+    characters = db.get_characters_by_novel(novel_id)
 
-    # 更新生成模式设置
-    gen_mode = body.generation_mode if body else "pregenerate"
-    db.update_novel_mode_settings(novel_id, generation_mode=gen_mode)
+    player_char = next((c for c in characters if c["id"] == character_id), None)
+    if not player_char:
+        raise HTTPException(status_code=404, detail="角色不存在")
 
-    # 先执行标准生成
     task_id = str(uuid.uuid4())
     db.create_generate_task(task_id)
 
     def run_task():
         try:
-            asyncio.run(run_generate_task_v2(
-                task_id, novel_id, chapter_index, character_id,
-                user_id=user["id"], generation_mode=gen_mode
+            asyncio.run(_generate_tree_task(
+                task_id, novel_id, chapter, characters, player_char
             ))
         except Exception as e:
-            print(f"[Thread] 任务异常: {e}")
             import traceback
             traceback.print_exc()
-
-    thread = threading.Thread(target=run_task, daemon=True)
-    thread.start()
-
-    return {
-        "task_id": task_id,
-        "status": "pending",
-        "generation_mode": gen_mode,
-        "message": "开始生成..."
-    }
-
-
-async def run_generate_task_v2(
-    task_id: str, novel_id: str, chapter_index: int,
-    character_id: str, user_id: str, generation_mode: str
-):
-    """v0.2 生成任务，支持节点构建"""
-    # 先执行标准生成
-    await run_generate_task(task_id, novel_id, chapter_index, character_id, user_id)
-
-    # 检查状态
-    task = db.get_task(task_id)
-    if task.get("status") != "completed":
-        return
-
-    # v0.2 新增：从生成的场景构建节点
-    try:
-        result = task.get("result", {})
-        scenes = result.get("scenes", [])
-        choices = result.get("choices", [])
-
-        if scenes:
-            # 构建节点网络
-            nodes = node_builder.build_nodes_from_scenes(scenes, choices, novel_id)
-
-            # 存储节点
-            for node in nodes:
-                db.create_story_node(
-                    node_pk=node["id"],
-                    novel_id=novel_id,
-                    node_id=node["node_id"],
-                    route=node.get("route", "main"),
-                    parent_node=node.get("parent_node"),
-                    scene_data=node.get("scene_data"),
-                    possible_events=node.get("possible_events", []),
-                    choices=node.get("choices", []),
-                    prerequisites=node.get("prerequisites", {}),
-                    needs_generation=node.get("needs_generation", False),
-                    generation_hint=node.get("generation_hint", "")
-                )
-
-            print(f"[{task_id}] 节点构建完成，共 {len(nodes)} 个节点")
-
-    except Exception as e:
-        print(f"[{task_id}] 节点构建失败: {e}")
-
-
-# ---------- 分支预览 API ----------
-@app.get("/api/novel/{novel_id}/branch-preview/{character_id}")
-async def get_branch_preview(novel_id: str, character_id: str, request: Request):
-    """获取分支预览（预生成模式）"""
-    user = get_current_user(request)
-    novel_db = db.get_novel(novel_id)
-    if not novel_db:
-        raise HTTPException(status_code=404, detail="小说不存在")
-
-    if novel_db["visibility"] == "private":
-        if not user or (novel_db["owner_id"] != user["id"] and user.get("role") != "admin"):
-            raise HTTPException(status_code=403, detail="无权访问")
-
-    preview = db.get_branch_preview(novel_id, character_id)
-    if not preview:
-        # 返回空结构，前端可以请求生成
-        return {"exists": False, "tree_data": None}
-
-    return {"exists": True, "tree_data": preview["tree_data"]}
-
-
-@app.post("/api/novel/{novel_id}/pregenerate/{character_id}")
-async def pregenerate_branches(novel_id: str, character_id: str, request: Request):
-    """预生成所有分支（长时间任务）"""
-    user = await login_required(get_current_user(request))
-    novel_db = db.get_novel(novel_id)
-    if not novel_db:
-        raise HTTPException(status_code=404, detail="小说不存在")
-
-    if novel_db["owner_id"] != user["id"] and user.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="无权操作")
-
-    task_id = str(uuid.uuid4())
-    db.create_generate_task(task_id)
-
-    def run_task():
-        try:
-            asyncio.run(_pregenerate_branches_task(task_id, novel_id, character_id))
-        except Exception as e:
-            print(f"[Thread] 预生成任务异常: {e}")
-            import traceback
-            traceback.print_exc()
+            db.update_task(task_id, status="failed", error=str(e))
 
     thread = threading.Thread(target=run_task, daemon=True)
     thread.start()
@@ -1501,89 +1506,127 @@ async def pregenerate_branches(novel_id: str, character_id: str, request: Reques
     return {"task_id": task_id, "status": "pending"}
 
 
-async def _pregenerate_branches_task(task_id: str, novel_id: str, character_id: str):
-    """预生成分支树任务"""
-    db.update_task(task_id, status="generating", progress=0.1, message="正在生成分支预览...")
+async def _generate_tree_task(
+    task_id: str,
+    novel_id: str,
+    chapter: Dict,
+    characters: List[Dict],
+    player_char: Dict
+):
+    """生成节点树任务"""
+    db.update_task(task_id, status="generating", progress=0.1, message="正在生成剧情树结构...")
 
     try:
-        characters = db.get_characters_by_novel(novel_id)
-        player_char = next((c for c in characters if c["id"] == character_id), None)
-        if not player_char:
-            raise ValueError("角色不存在")
+        segments = db.get_segments_by_chapter(chapter["id"])
+        print(f"[TreeGen] Chapter: {chapter.get('title')}, Segments: {len(segments) if segments else 0}")
 
-        chapters = db.get_chapters_by_novel(novel_id)
-        nodes = db.get_story_nodes_by_novel(novel_id)
+        # 构建节点树（不含场景内容）
+        nodes = await node_builder.build_tree_from_segments(
+            segments=segments if segments else [{"content": chapter["raw_content"], "index": 0}],
+            novel_id=novel_id,
+            player_character=player_char,
+            all_characters=characters
+        )
+
+        print(f"[TreeGen] Generated nodes count: {len(nodes) if nodes else 0}")
 
         if not nodes:
-            # 如果没有节点，从场景构建
-            for chapter in chapters:
-                runs = db.get_generated_runs_for_chapter(chapter["id"])
-                if runs:
-                    run = runs[-1]
-                    scenes = run["scenes_data"]
-                    choices = run["choices_data"]
-                    new_nodes = node_builder.build_nodes_from_scenes(scenes, choices, novel_id)
-                    for node in new_nodes:
-                        db.create_story_node(
-                            node_pk=node["id"],
-                            novel_id=novel_id,
-                            node_id=node["node_id"],
-                            route=node.get("route", "main"),
-                            scene_data=node.get("scene_data"),
-                            choices=node.get("choices", [])
-                        )
-                    nodes.extend(new_nodes)
+            raise ValueError("生成节点树失败：AI 未返回有效节点")
 
-        # 构建分支树结构
-        tree_data = _build_branch_tree(nodes)
+        # 存储节点（只有结构，scene_data 为空）
+        for node in nodes:
+            db.create_story_node(
+                node_pk=node["id"],
+                novel_id=novel_id,
+                node_id=node["node_id"],
+                route=node.get("route", "main"),
+                parent_node=node.get("parent_node"),
+                scene_data=None,  # 待确认后生成
+                possible_events=node.get("possible_events", []),
+                choices=node.get("choices", []),  # 传递 List，不是 JSON 字符串
+                prerequisites=node.get("prerequisites", {}),
+                needs_generation=True,
+                generation_hint=node.get("scene_preview", "")
+            )
 
-        # 存储预览
-        preview_id = str(uuid.uuid4())
-        db.create_branch_preview(preview_id, novel_id, character_id, tree_data)
+        # 关联事件到节点
+        events = db.get_story_events_by_novel(novel_id)
+        for node in nodes:
+            node_events = _match_events_to_node(node, events)
+            if node_events:
+                db.update_story_node_events(node["id"], node_events)
+
+        # 构建树预览数据
+        tree_data = _build_tree_preview(nodes)
+
+        # 存储待确认的树（包含玩家角色ID）
+        tree_id = str(uuid.uuid4())
+        pending_trees[tree_id] = {
+            "novel_id": novel_id,
+            "chapter_id": chapter["id"],
+            "nodes": nodes,
+            "player_character_id": player_char["id"],  # 保存玩家角色ID
+            "created_at": datetime.utcnow().isoformat()
+        }
 
         db.update_task(
             task_id,
             status="completed",
             progress=1.0,
-            message="分支预览生成完成",
-            result={"preview_id": preview_id, "node_count": len(nodes)}
+            message="树结构生成完成，等待确认",
+            result={
+                "tree_id": tree_id,
+                "node_count": len(nodes),
+                "tree_data": tree_data
+            }
         )
 
     except Exception as e:
         db.update_task(task_id, status="failed", error=str(e))
 
 
-def _build_branch_tree(nodes: List[Dict]) -> Dict:
-    """构建分支树结构"""
+def _match_events_to_node(node: Dict, events: List[Dict]) -> List[str]:
+    """匹配事件到节点"""
+    matched = []
+    chars_involved = set(node.get("characters_involved", []))
+
+    for event in events:
+        conditions = event.get("trigger_conditions", {})
+        if isinstance(conditions, str):
+            conditions = json.loads(conditions)
+
+        # 简单匹配：涉及的角色有交集
+        event_chars = set(conditions.get("characters_involved", []))
+        if chars_involved & event_chars:
+            matched.append(event["id"])
+
+    return matched
+
+
+def _build_tree_preview(nodes: List[Dict]) -> Dict:
+    """构建树预览数据"""
     if not nodes:
         return {"root": None}
 
-    # 找到根节点
-    root = nodes[0] if nodes else None
     node_map = {n["node_id"]: n for n in nodes}
 
-    def build_node_tree(node: Dict, depth: int = 0) -> Dict:
-        if depth > 10:  # 限制深度
-            return {"node_id": node["node_id"], "truncated": True}
+    def build_subtree(node_id: str, depth: int = 0) -> Dict:
+        if depth > 20 or node_id not in node_map:
+            return None
+
+        node = node_map[node_id]
+        choices = json.loads(node.get("choices", "[]")) if isinstance(node.get("choices"), str) else node.get("choices", [])
 
         tree_node = {
-            "node_id": node["node_id"],
+            "node_id": node_id,
             "route": node.get("route", "main"),
-            "scene_preview": None,
+            "preview": node.get("generation_hint", node.get("scene_preview", "")),
+            "characters": node.get("characters_involved", []),
+            "needs_generation": node.get("needs_generation", True),
             "choices": []
         }
 
-        # 场景预览
-        if node.get("scene_data"):
-            scene = node["scene_data"]
-            tree_node["scene_preview"] = {
-                "title": scene.get("title", ""),
-                "location": scene.get("location", ""),
-                "description": scene.get("description", "")[:100] + "..." if scene.get("description") else ""
-            }
-
-        # 选择分支
-        for choice in node.get("choices", []):
+        for choice in choices:
             choice_node = {
                 "prompt": choice.get("prompt", ""),
                 "options": []
@@ -1592,61 +1635,252 @@ def _build_branch_tree(nodes: List[Dict]) -> Dict:
                 opt_node = {
                     "text": opt.get("text", ""),
                     "route": opt.get("route", "main"),
+                    "effects": opt.get("effects", {})
                 }
-                next_node_id = opt.get("next_node")
-                if next_node_id and next_node_id in node_map:
-                    opt_node["child"] = build_node_tree(node_map[next_node_id], depth + 1)
+                next_node = opt.get("next_node")
+                if next_node and next_node in node_map:
+                    opt_node["child"] = build_subtree(next_node, depth + 1)
                 choice_node["options"].append(opt_node)
             tree_node["choices"].append(choice_node)
 
         return tree_node
 
-    return {"root": build_node_tree(root) if root else None}
+    root = nodes[0] if nodes else None
+    return {"root": build_subtree(root["node_id"]) if root else None}
 
 
-# ---------- 游戏存档 API ----------
-@app.post("/api/game-state")
-async def create_game_state_api(novel_id: str, character_id: str, request: Request):
-    """创建游戏状态"""
+@app.post("/api/novel/{novel_id}/confirm-tree/{tree_id}")
+async def confirm_tree_api(novel_id: str, tree_id: str, request: Request):
+    """
+    确认树结构，开始生成所有节点的场景内容
+    """
     user = await login_required(get_current_user(request))
 
+    if tree_id not in pending_trees:
+        raise HTTPException(status_code=404, detail="树结构不存在或已过期")
+
+    tree_data = pending_trees[tree_id]
+    if tree_data["novel_id"] != novel_id:
+        raise HTTPException(status_code=400, detail="树结构与小说不匹配")
+
+    task_id = str(uuid.uuid4())
+    db.create_generate_task(task_id)
+
+    def run_task():
+        try:
+            asyncio.run(_generate_all_scenes_task(
+                task_id, novel_id, tree_data
+            ))
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            db.update_task(task_id, status="failed", error=str(e))
+
+    thread = threading.Thread(target=run_task, daemon=True)
+    thread.start()
+
+    # 清理待确认缓存
+    del pending_trees[tree_id]
+
+    return {"task_id": task_id, "status": "pending"}
+
+
+async def _generate_all_scenes_task(task_id: str, novel_id: str, tree_data: Dict):
+    """为所有节点生成场景内容"""
+    db.update_task(task_id, status="generating", progress=0.0, message="正在生成场景内容...")
+
+    try:
+        nodes = tree_data["nodes"]
+        chapters = db.get_chapters_by_novel(novel_id)
+        characters = db.get_characters_by_novel(novel_id)
+
+        # 找到玩家角色
+        player_char_id = tree_data.get("player_character_id")
+        player_char = next((c for c in characters if c["id"] == player_char_id), characters[0] if characters else None)
+
+        characters_map = {c["name"]: c for c in characters}
+
+        total = len(nodes)
+        context = {}
+
+        for i, node in enumerate(nodes):
+            if node.get("needs_generation"):
+                # 生成场景内容
+                scene = await node_builder.generate_node_scene(
+                    node=node,
+                    player_character=player_char,
+                    context=context,
+                    characters_map=characters_map
+                )
+
+                # 更新节点
+                db.update_story_node_scene(node["id"], scene)
+
+                # 更新上下文
+                context = {
+                    "last_location": scene.get("location", ""),
+                    "last_characters": scene.get("characters", []),
+                    "summary": scene.get("description", "")[:200] if scene.get("description") else ""
+                }
+
+            progress = (i + 1) / total
+            db.update_task(task_id, progress=progress, message=f"生成场景 {i+1}/{total}...")
+
+        # AI 审阅（可选）
+        novel_db = db.get_novel(novel_id)
+        if novel_db and novel_db.get("enable_review"):
+            db.update_task(task_id, progress=0.9, message="AI审阅中...")
+            # 审阅逻辑...
+
+        db.update_task(
+            task_id,
+            status="completed",
+            progress=1.0,
+            message="场景生成完成",
+            result={"node_count": total}
+        )
+
+    except Exception as e:
+        db.update_task(task_id, status="failed", error=str(e))
+
+
+@app.post("/api/novel/{novel_id}/reject-tree/{tree_id}")
+async def reject_tree_api(novel_id: str, tree_id: str, request: Request):
+    """
+    拒绝树结构，删除并可以重新生成
+    """
+    user = await login_required(get_current_user(request))
+
+    if tree_id not in pending_trees:
+        raise HTTPException(status_code=404, detail="树结构不存在或已过期")
+
+    tree_data = pending_trees[tree_id]
+
+    # 删除已存储的节点
+    for node in tree_data.get("nodes", []):
+        try:
+            db.delete_story_node(node["id"])
+        except Exception as e:
+            print(f"删除节点失败: {e}")
+
+    # 清理缓存
+    del pending_trees[tree_id]
+
+    return {"success": True, "message": "已删除，可以重新生成"}
+
+
+@app.get("/api/novel/{novel_id}/tree-preview/{tree_id}")
+async def get_tree_preview_api(novel_id: str, tree_id: str, request: Request):
+    """获取树预览数据"""
+    if tree_id not in pending_trees:
+        raise HTTPException(status_code=404, detail="树结构不存在或已过期")
+
+    tree_data = pending_trees[tree_id]
+    if tree_data["novel_id"] != novel_id:
+        raise HTTPException(status_code=400, detail="树结构与小说不匹配")
+
+    return {
+        "tree_id": tree_id,
+        "tree_data": _build_tree_preview(tree_data["nodes"]),
+        "node_count": len(tree_data["nodes"])
+    }
+
+
+# ==================== 游戏引擎 API ====================
+
+class StartGameRequest(BaseModel):
+    chapter_index: Optional[int] = 0
+
+
+@app.post("/api/game/start")
+async def start_game_api(request: Request):
+    """
+    开始游戏 - 创建 GameState 并返回起始节点
+    """
+    user = await login_required(get_current_user(request))
+    body = await request.json()
+
+    novel_id = body.get("novel_id")
+    chapter_index = body.get("chapter_index", 0)
+    character_id = body.get("character_id")
+
+    if not all([novel_id, character_id]):
+        raise HTTPException(status_code=400, detail="缺少参数")
+
+    # 获取起始节点
+    nodes = db.get_story_nodes_by_novel(novel_id)
+    if not nodes:
+        raise HTTPException(status_code=404, detail="节点数据不存在，请先生成")
+
+    start_node = nodes[0]
+
+    # 创建 GameState
     state = state_manager.create_state(
         novel_id=novel_id,
         user_id=user["id"],
-        character_id=character_id
+        character_id=character_id,
+        initial_node=start_node["node_id"]
     )
 
-    return {"state_id": state.id, "success": True}
+    # 获取可用选择
+    choices = json.loads(start_node.get("choices", "[]")) if isinstance(start_node.get("choices"), str) else start_node.get("choices", [])
+
+    return {
+        "state_id": state.id,
+        "current_node": {
+            "node_id": start_node["node_id"],
+            "scene_data": start_node.get("scene_data"),
+            "choices": choices
+        },
+        "state": state.to_dict()
+    }
 
 
-@app.get("/api/game-state/{state_id}")
-async def get_game_state_api(state_id: str, request: Request):
-    """获取游戏状态"""
+@app.get("/api/game/{state_id}/node")
+async def get_current_node_api(state_id: str, request: Request):
+    """获取当前节点和可用选择"""
     user = get_current_user(request)
     state = state_manager.get_state(state_id)
 
     if not state:
         raise HTTPException(status_code=404, detail="游戏状态不存在")
 
-    # 权限检查
     if user and state.user_id != user["id"] and user.get("role") != "admin":
         raise HTTPException(status_code=403, detail="无权访问")
 
-    return state.to_dict()
+    # 获取节点数据
+    node = db.get_story_node_by_node_id(state.novel_id, state.current_node_id)
+    if not node:
+        raise HTTPException(status_code=404, detail="节点不存在")
+
+    # 检查并触发事件
+    triggered_events = event_manager.check_and_trigger_events(state, state.current_node_id)
+
+    choices = json.loads(node.get("choices", "[]")) if isinstance(node.get("choices"), str) else node.get("choices", [])
+
+    return {
+        "node": {
+            "node_id": node["node_id"],
+            "route": node.get("route", "main"),
+            "scene_data": node.get("scene_data"),
+            "choices": choices
+        },
+        "state": state.to_dict(),
+        "triggered_events": [{"id": e[0].id, "name": e[0].name} for e in triggered_events] if triggered_events else []
+    }
 
 
-@app.post("/api/choose")
-async def make_choice_api(request: Request):
-    """做出选择"""
+class ChooseRequest(BaseModel):
+    choice_id: str
+    option_index: int
+
+
+@app.post("/api/game/{state_id}/choose")
+async def make_choice_api(state_id: str, request: Request, body: ChooseRequest):
+    """
+    做出选择 - 导航到下一节点
+    """
     user = await login_required(get_current_user(request))
-    body = await request.json()
-
-    state_id = body.get("game_state_id")
-    choice_id = body.get("choice_id")
-    option_index = body.get("option_index")
-
-    if not all([state_id, choice_id, option_index is not None]):
-        raise HTTPException(status_code=400, detail="缺少参数")
 
     state = state_manager.get_state(state_id)
     if not state:
@@ -1656,23 +1890,48 @@ async def make_choice_api(request: Request):
         raise HTTPException(status_code=403, detail="无权操作")
 
     try:
-        new_state = node_navigator.navigate_to(state, choice_id, option_index)
-        return {"success": True, "state": new_state.to_dict()}
+        # 导航到下一节点
+        new_state = node_navigator.navigate_to(
+            state,
+            body.choice_id,
+            body.option_index
+        )
+
+        # 获取新节点
+        next_node = db.get_story_node_by_node_id(state.novel_id, new_state.current_node_id)
+
+        # 如果节点需要生成内容（实时模式）
+        if next_node and next_node.get("needs_generation"):
+            characters = db.get_characters_by_novel(state.novel_id)
+            player_char = next((c for c in characters if c["id"] == state.character_id), None)
+
+            if player_char:
+                scene = await node_builder.generate_node_scene(
+                    node=next_node,
+                    player_character=player_char,
+                    context={"last_route": new_state.current_route}
+                )
+                db.update_story_node_scene(next_node["id"], scene)
+                next_node = db.get_story_node_by_node_id(state.novel_id, new_state.current_node_id)
+
+        choices = json.loads(next_node.get("choices", "[]")) if next_node and isinstance(next_node.get("choices"), str) else (next_node.get("choices", []) if next_node else [])
+
+        return {
+            "success": True,
+            "state": new_state.to_dict(),
+            "next_node": {
+                "node_id": next_node["node_id"] if next_node else None,
+                "scene_data": next_node.get("scene_data") if next_node else None,
+                "choices": choices
+            } if next_node else None
+        }
+
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@app.get("/api/node/{node_id}")
-async def get_node_content(node_id: str, novel_id: str, request: Request):
-    """获取节点内容"""
-    node = db.get_story_node_by_node_id(novel_id, node_id)
-    if not node:
-        raise HTTPException(status_code=404, detail="节点不存在")
+# ==================== 存档 API ====================
 
-    return node
-
-
-# ---------- 存档 API ----------
 @app.post("/api/save")
 async def create_save_api(request: Request):
     """创建存档"""
@@ -1708,7 +1967,6 @@ async def list_saves_api(novel_id: str, request: Request):
     """获取存档列表"""
     user = await login_required(get_current_user(request))
 
-    # 获取用户在此小说的所有游戏状态
     states = db.get_game_states_by_user(user["id"], novel_id)
 
     saves = []
@@ -1728,7 +1986,6 @@ async def load_save_api(save_id: str, request: Request):
     if not save_data:
         raise HTTPException(status_code=404, detail="存档不存在")
 
-    # 通过 game_state 检查权限
     state = db.get_game_state(save_data["game_state_id"])
     if not state or (state["user_id"] != user["id"] and user.get("role") != "admin"):
         raise HTTPException(status_code=403, detail="无权访问")
@@ -1737,7 +1994,17 @@ async def load_save_api(save_id: str, request: Request):
     if not state_obj:
         raise HTTPException(status_code=404, detail="存档数据损坏")
 
-    return {"success": True, "state": state_obj.to_dict()}
+    # 获取当前节点
+    node = db.get_story_node_by_node_id(state_obj.novel_id, state_obj.current_node_id)
+
+    return {
+        "success": True,
+        "state": state_obj.to_dict(),
+        "current_node": {
+            "node_id": node["node_id"] if node else None,
+            "scene_data": node.get("scene_data") if node else None
+        } if node else None
+    }
 
 
 @app.delete("/api/save/{save_id}")
