@@ -163,6 +163,103 @@ CREATE TABLE IF NOT EXISTS prompt_history (
 CREATE INDEX IF NOT EXISTS idx_prompt_history_type ON prompt_history(prompt_type);
 CREATE INDEX IF NOT EXISTS idx_prompt_history_created ON prompt_history(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_prompt_history_novel ON prompt_history(novel_id);
+
+-- ============================================
+-- v0.2 新增表：状态机系统
+-- ============================================
+
+-- 事件定义表
+CREATE TABLE IF NOT EXISTS story_events (
+    id TEXT PRIMARY KEY,
+    novel_id TEXT NOT NULL,
+    event_id TEXT NOT NULL,
+    name TEXT,
+    description TEXT,
+    trigger_conditions TEXT DEFAULT '{}',
+    effects TEXT DEFAULT '{}',
+    scene_data TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (novel_id) REFERENCES novels(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_story_events_novel ON story_events(novel_id);
+
+-- 节点定义表
+CREATE TABLE IF NOT EXISTS story_nodes (
+    id TEXT PRIMARY KEY,
+    novel_id TEXT NOT NULL,
+    node_id TEXT NOT NULL,
+    route TEXT DEFAULT 'main',
+    parent_node TEXT,
+    scene_data TEXT,
+    possible_events TEXT DEFAULT '[]',
+    choices TEXT DEFAULT '[]',
+    prerequisites TEXT DEFAULT '{}',
+    needs_generation INTEGER DEFAULT 0,
+    generation_hint TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (novel_id) REFERENCES novels(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_story_nodes_novel ON story_nodes(novel_id);
+CREATE INDEX IF NOT EXISTS idx_story_nodes_parent ON story_nodes(parent_node);
+
+-- 选择定义表
+CREATE TABLE IF NOT EXISTS story_choices (
+    id TEXT PRIMARY KEY,
+    novel_id TEXT NOT NULL,
+    choice_id TEXT NOT NULL,
+    at_node TEXT NOT NULL,
+    prompt TEXT,
+    options TEXT DEFAULT '[]',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (novel_id) REFERENCES novels(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_story_choices_novel ON story_choices(novel_id);
+CREATE INDEX IF NOT EXISTS idx_story_choices_node ON story_choices(at_node);
+
+-- 游戏状态表（运行时状态）
+CREATE TABLE IF NOT EXISTS game_states (
+    id TEXT PRIMARY KEY,
+    novel_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    character_id TEXT NOT NULL,
+    state_data TEXT NOT NULL,
+    current_node TEXT,
+    current_route TEXT DEFAULT 'main',
+    visited_nodes TEXT DEFAULT '[]',
+    choice_history TEXT DEFAULT '[]',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (novel_id) REFERENCES novels(id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_game_states_novel ON game_states(novel_id);
+CREATE INDEX IF NOT EXISTS idx_game_states_user ON game_states(user_id);
+
+-- 存档表
+CREATE TABLE IF NOT EXISTS game_saves (
+    id TEXT PRIMARY KEY,
+    game_state_id TEXT NOT NULL,
+    save_name TEXT,
+    save_slot INTEGER DEFAULT 0,
+    state_snapshot TEXT NOT NULL,
+    node_id TEXT,
+    route TEXT,
+    play_time INTEGER DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (game_state_id) REFERENCES game_states(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_game_saves_state ON game_saves(game_state_id);
+
+-- 分支预览表（预生成时使用）
+CREATE TABLE IF NOT EXISTS branch_previews (
+    id TEXT PRIMARY KEY,
+    novel_id TEXT NOT NULL,
+    character_id TEXT NOT NULL,
+    tree_data TEXT NOT NULL,
+    generated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (novel_id) REFERENCES novels(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_branch_previews_novel ON branch_previews(novel_id);
 """
 
 
@@ -205,6 +302,15 @@ class Database:
         ]:
             try:
                 conn.execute(f"ALTER TABLE segments ADD COLUMN {col[0]} {col[1]}")
+            except sqlite3.OperationalError:
+                pass
+        # novels 表 - v0.2 新增字段
+        for col in [
+            ("event_extraction_mode", "TEXT DEFAULT 'auto'"),  # auto/manual/hybrid
+            ("generation_mode", "TEXT DEFAULT 'pregenerate'"),  # pregenerate/realtime
+        ]:
+            try:
+                conn.execute(f"ALTER TABLE novels ADD COLUMN {col[0]} {col[1]}")
             except sqlite3.OperationalError:
                 pass
         conn.commit()
@@ -894,6 +1000,427 @@ class Database:
         conn.commit()
         conn.close()
         return cursor.rowcount
+
+    # ===================== v0.2 状态机相关方法 =====================
+
+    # ---------- Story Events ----------
+    def create_story_event(self, event_id: str, novel_id: str, event_data: Dict[str, Any]) -> None:
+        """创建事件定义"""
+        conn = self._get_conn()
+        conn.execute(
+            """INSERT OR REPLACE INTO story_events
+               (id, novel_id, event_id, name, description, trigger_conditions, effects, scene_data)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (event_id, novel_id, event_data.get("event_id", event_id),
+             event_data.get("name", ""), event_data.get("description", ""),
+             json.dumps(event_data.get("trigger_conditions", {}), ensure_ascii=False),
+             json.dumps(event_data.get("effects", {}), ensure_ascii=False),
+             json.dumps(event_data.get("scene_data"), ensure_ascii=False) if event_data.get("scene_data") else None),
+        )
+        conn.commit()
+        conn.close()
+
+    def get_story_events_by_novel(self, novel_id: str) -> List[Dict[str, Any]]:
+        """获取小说的所有事件"""
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT * FROM story_events WHERE novel_id = ?", (novel_id,)
+        ).fetchall()
+        conn.close()
+        result = []
+        for row in rows:
+            d = dict(row)
+            d["trigger_conditions"] = json.loads(d["trigger_conditions"])
+            d["effects"] = json.loads(d["effects"])
+            d["scene_data"] = json.loads(d["scene_data"]) if d["scene_data"] else None
+            result.append(d)
+        return result
+
+    def get_story_event(self, event_id: str) -> Optional[Dict[str, Any]]:
+        """获取单个事件"""
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT * FROM story_events WHERE id = ?", (event_id,)
+        ).fetchone()
+        conn.close()
+        if not row:
+            return None
+        d = dict(row)
+        d["trigger_conditions"] = json.loads(d["trigger_conditions"])
+        d["effects"] = json.loads(d["effects"])
+        d["scene_data"] = json.loads(d["scene_data"]) if d["scene_data"] else None
+        return d
+
+    def delete_story_events_by_novel(self, novel_id: str) -> None:
+        """删除小说的所有事件"""
+        conn = self._get_conn()
+        conn.execute("DELETE FROM story_events WHERE novel_id = ?", (novel_id,))
+        conn.commit()
+        conn.close()
+
+    # ---------- Story Nodes ----------
+    def create_story_node(self, node_pk: str, novel_id: str, node_id: str,
+                          route: str = "main", parent_node: str = None,
+                          scene_data: Dict = None, possible_events: List = None,
+                          choices: List = None, prerequisites: Dict = None,
+                          needs_generation: bool = False, generation_hint: str = "") -> None:
+        """创建剧情节点"""
+        conn = self._get_conn()
+        conn.execute(
+            """INSERT OR REPLACE INTO story_nodes
+               (id, novel_id, node_id, route, parent_node, scene_data, possible_events,
+                choices, prerequisites, needs_generation, generation_hint)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (node_pk, novel_id, node_id, route, parent_node,
+             json.dumps(scene_data, ensure_ascii=False) if scene_data else None,
+             json.dumps(possible_events or [], ensure_ascii=False),
+             json.dumps(choices or [], ensure_ascii=False),
+             json.dumps(prerequisites or {}, ensure_ascii=False),
+             1 if needs_generation else 0, generation_hint),
+        )
+        conn.commit()
+        conn.close()
+
+    def get_story_nodes_by_novel(self, novel_id: str, route: str = None) -> List[Dict[str, Any]]:
+        """获取小说的所有节点"""
+        conn = self._get_conn()
+        if route:
+            rows = conn.execute(
+                "SELECT * FROM story_nodes WHERE novel_id = ? AND route = ?",
+                (novel_id, route)
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM story_nodes WHERE novel_id = ?", (novel_id,)
+            ).fetchall()
+        conn.close()
+        result = []
+        for row in rows:
+            d = dict(row)
+            d["scene_data"] = json.loads(d["scene_data"]) if d["scene_data"] else None
+            d["possible_events"] = json.loads(d["possible_events"])
+            d["choices"] = json.loads(d["choices"])
+            d["prerequisites"] = json.loads(d["prerequisites"])
+            d["needs_generation"] = bool(d["needs_generation"])
+            result.append(d)
+        return result
+
+    def get_story_node(self, node_pk: str) -> Optional[Dict[str, Any]]:
+        """获取单个节点"""
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT * FROM story_nodes WHERE id = ?", (node_pk,)
+        ).fetchone()
+        conn.close()
+        if not row:
+            return None
+        d = dict(row)
+        d["scene_data"] = json.loads(d["scene_data"]) if d["scene_data"] else None
+        d["possible_events"] = json.loads(d["possible_events"])
+        d["choices"] = json.loads(d["choices"])
+        d["prerequisites"] = json.loads(d["prerequisites"])
+        d["needs_generation"] = bool(d["needs_generation"])
+        return d
+
+    def get_story_node_by_node_id(self, novel_id: str, node_id: str) -> Optional[Dict[str, Any]]:
+        """通过业务ID获取节点"""
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT * FROM story_nodes WHERE novel_id = ? AND node_id = ?",
+            (novel_id, node_id)
+        ).fetchone()
+        conn.close()
+        if not row:
+            return None
+        d = dict(row)
+        d["scene_data"] = json.loads(d["scene_data"]) if d["scene_data"] else None
+        d["possible_events"] = json.loads(d["possible_events"])
+        d["choices"] = json.loads(d["choices"])
+        d["prerequisites"] = json.loads(d["prerequisites"])
+        d["needs_generation"] = bool(d["needs_generation"])
+        return d
+
+    def update_story_node_scene(self, node_pk: str, scene_data: Dict) -> None:
+        """更新节点的场景数据"""
+        conn = self._get_conn()
+        conn.execute(
+            "UPDATE story_nodes SET scene_data = ? WHERE id = ?",
+            (json.dumps(scene_data, ensure_ascii=False), node_pk),
+        )
+        conn.commit()
+        conn.close()
+
+    def delete_story_nodes_by_novel(self, novel_id: str) -> None:
+        """删除小说的所有节点"""
+        conn = self._get_conn()
+        conn.execute("DELETE FROM story_nodes WHERE novel_id = ?", (novel_id,))
+        conn.commit()
+        conn.close()
+
+    # ---------- Story Choices ----------
+    def create_story_choice(self, choice_pk: str, novel_id: str, choice_id: str,
+                            at_node: str, prompt: str, options: List[Dict]) -> None:
+        """创建选择定义"""
+        conn = self._get_conn()
+        conn.execute(
+            """INSERT OR REPLACE INTO story_choices
+               (id, novel_id, choice_id, at_node, prompt, options)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (choice_pk, novel_id, choice_id, at_node, prompt,
+             json.dumps(options, ensure_ascii=False)),
+        )
+        conn.commit()
+        conn.close()
+
+    def get_story_choices_by_node(self, novel_id: str, at_node: str) -> List[Dict[str, Any]]:
+        """获取节点的所有选择"""
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT * FROM story_choices WHERE novel_id = ? AND at_node = ?",
+            (novel_id, at_node)
+        ).fetchall()
+        conn.close()
+        result = []
+        for row in rows:
+            d = dict(row)
+            d["options"] = json.loads(d["options"])
+            result.append(d)
+        return result
+
+    def get_story_choice(self, choice_pk: str) -> Optional[Dict[str, Any]]:
+        """获取单个选择"""
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT * FROM story_choices WHERE id = ?", (choice_pk,)
+        ).fetchone()
+        conn.close()
+        if not row:
+            return None
+        d = dict(row)
+        d["options"] = json.loads(d["options"])
+        return d
+
+    def delete_story_choices_by_novel(self, novel_id: str) -> None:
+        """删除小说的所有选择"""
+        conn = self._get_conn()
+        conn.execute("DELETE FROM story_choices WHERE novel_id = ?", (novel_id,))
+        conn.commit()
+        conn.close()
+
+    # ---------- Game States ----------
+    def create_game_state(self, state_id: str, novel_id: str, user_id: str,
+                          character_id: str, state_data: Dict,
+                          current_node: str = None, current_route: str = "main",
+                          visited_nodes: List = None, choice_history: List = None) -> None:
+        """创建游戏状态"""
+        conn = self._get_conn()
+        conn.execute(
+            """INSERT INTO game_states
+               (id, novel_id, user_id, character_id, state_data, current_node,
+                current_route, visited_nodes, choice_history)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (state_id, novel_id, user_id, character_id,
+             json.dumps(state_data, ensure_ascii=False),
+             current_node, current_route,
+             json.dumps(visited_nodes or [], ensure_ascii=False),
+             json.dumps(choice_history or [], ensure_ascii=False)),
+        )
+        conn.commit()
+        conn.close()
+
+    def get_game_state(self, state_id: str) -> Optional[Dict[str, Any]]:
+        """获取游戏状态"""
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT * FROM game_states WHERE id = ?", (state_id,)
+        ).fetchone()
+        conn.close()
+        if not row:
+            return None
+        d = dict(row)
+        d["state_data"] = json.loads(d["state_data"])
+        d["visited_nodes"] = json.loads(d["visited_nodes"])
+        d["choice_history"] = json.loads(d["choice_history"])
+        return d
+
+    def get_game_states_by_user(self, user_id: str, novel_id: str = None) -> List[Dict[str, Any]]:
+        """获取用户的游戏状态列表"""
+        conn = self._get_conn()
+        if novel_id:
+            rows = conn.execute(
+                "SELECT * FROM game_states WHERE user_id = ? AND novel_id = ? ORDER BY updated_at DESC",
+                (user_id, novel_id)
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM game_states WHERE user_id = ? ORDER BY updated_at DESC",
+                (user_id,)
+            ).fetchall()
+        conn.close()
+        result = []
+        for row in rows:
+            d = dict(row)
+            d["state_data"] = json.loads(d["state_data"])
+            d["visited_nodes"] = json.loads(d["visited_nodes"])
+            d["choice_history"] = json.loads(d["choice_history"])
+            result.append(d)
+        return result
+
+    def update_game_state(self, state_id: str, state_data: Dict = None,
+                          current_node: str = None, current_route: str = None,
+                          visited_nodes: List = None, choice_history: List = None) -> None:
+        """更新游戏状态"""
+        fields = []
+        values = []
+        if state_data is not None:
+            fields.append("state_data = ?")
+            values.append(json.dumps(state_data, ensure_ascii=False))
+        if current_node is not None:
+            fields.append("current_node = ?")
+            values.append(current_node)
+        if current_route is not None:
+            fields.append("current_route = ?")
+            values.append(current_route)
+        if visited_nodes is not None:
+            fields.append("visited_nodes = ?")
+            values.append(json.dumps(visited_nodes, ensure_ascii=False))
+        if choice_history is not None:
+            fields.append("choice_history = ?")
+            values.append(json.dumps(choice_history, ensure_ascii=False))
+        fields.append("updated_at = CURRENT_TIMESTAMP")
+        values.append(state_id)
+
+        conn = self._get_conn()
+        conn.execute(f"UPDATE game_states SET {', '.join(fields)} WHERE id = ?", values)
+        conn.commit()
+        conn.close()
+
+    def delete_game_state(self, state_id: str) -> None:
+        """删除游戏状态"""
+        conn = self._get_conn()
+        conn.execute("DELETE FROM game_states WHERE id = ?", (state_id,))
+        conn.commit()
+        conn.close()
+
+    # ---------- Game Saves ----------
+    def create_game_save(self, save_id: str, game_state_id: str, save_name: str,
+                         save_slot: int, state_snapshot: Dict, node_id: str,
+                         route: str, play_time: int = 0) -> None:
+        """创建存档"""
+        conn = self._get_conn()
+        conn.execute(
+            """INSERT INTO game_saves
+               (id, game_state_id, save_name, save_slot, state_snapshot,
+                node_id, route, play_time)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (save_id, game_state_id, save_name, save_slot,
+             json.dumps(state_snapshot, ensure_ascii=False),
+             node_id, route, play_time),
+        )
+        conn.commit()
+        conn.close()
+
+    def get_game_saves_by_state(self, game_state_id: str) -> List[Dict[str, Any]]:
+        """获取游戏状态的所有存档"""
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT * FROM game_saves WHERE game_state_id = ? ORDER BY created_at DESC",
+            (game_state_id,)
+        ).fetchall()
+        conn.close()
+        result = []
+        for row in rows:
+            d = dict(row)
+            d["state_snapshot"] = json.loads(d["state_snapshot"])
+            result.append(d)
+        return result
+
+    def get_game_save(self, save_id: str) -> Optional[Dict[str, Any]]:
+        """获取单个存档"""
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT * FROM game_saves WHERE id = ?", (save_id,)
+        ).fetchone()
+        conn.close()
+        if not row:
+            return None
+        d = dict(row)
+        d["state_snapshot"] = json.loads(d["state_snapshot"])
+        return d
+
+    def delete_game_save(self, save_id: str) -> None:
+        """删除存档"""
+        conn = self._get_conn()
+        conn.execute("DELETE FROM game_saves WHERE id = ?", (save_id,))
+        conn.commit()
+        conn.close()
+
+    def delete_game_saves_by_state(self, game_state_id: str) -> None:
+        """删除游戏状态的所有存档"""
+        conn = self._get_conn()
+        conn.execute("DELETE FROM game_saves WHERE game_state_id = ?", (game_state_id,))
+        conn.commit()
+        conn.close()
+
+    # ---------- Branch Previews ----------
+    def create_branch_preview(self, preview_id: str, novel_id: str,
+                              character_id: str, tree_data: Dict) -> None:
+        """创建分支预览"""
+        conn = self._get_conn()
+        conn.execute(
+            """INSERT OR REPLACE INTO branch_previews
+               (id, novel_id, character_id, tree_data)
+               VALUES (?, ?, ?, ?)""",
+            (preview_id, novel_id, character_id,
+             json.dumps(tree_data, ensure_ascii=False)),
+        )
+        conn.commit()
+        conn.close()
+
+    def get_branch_preview(self, novel_id: str, character_id: str) -> Optional[Dict[str, Any]]:
+        """获取分支预览"""
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT * FROM branch_previews WHERE novel_id = ? AND character_id = ?",
+            (novel_id, character_id)
+        ).fetchone()
+        conn.close()
+        if not row:
+            return None
+        d = dict(row)
+        d["tree_data"] = json.loads(d["tree_data"])
+        return d
+
+    def delete_branch_preview(self, novel_id: str, character_id: str) -> None:
+        """删除分支预览"""
+        conn = self._get_conn()
+        conn.execute(
+            "DELETE FROM branch_previews WHERE novel_id = ? AND character_id = ?",
+            (novel_id, character_id)
+        )
+        conn.commit()
+        conn.close()
+
+    # ---------- Novel v0.2 fields ----------
+    def update_novel_mode_settings(self, novel_id: str,
+                                   event_extraction_mode: str = None,
+                                   generation_mode: str = None) -> None:
+        """更新小说的模式设置"""
+        fields = []
+        values = []
+        if event_extraction_mode is not None:
+            fields.append("event_extraction_mode = ?")
+            values.append(event_extraction_mode)
+        if generation_mode is not None:
+            fields.append("generation_mode = ?")
+            values.append(generation_mode)
+        if not fields:
+            return
+        values.append(novel_id)
+        conn = self._get_conn()
+        conn.execute(f"UPDATE novels SET {', '.join(fields)} WHERE id = ?", values)
+        conn.commit()
+        conn.close()
 
 
 db = Database()

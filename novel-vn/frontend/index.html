@@ -245,6 +245,18 @@
                 审阅可以检查 speaker 错误、缺失选择等问题，建议开启
             </small>
         </div>
+        <!-- v0.2 新增：事件提取方式 -->
+        <div class="form-group" style="text-align: left; margin-bottom: 30px;">
+            <label>事件提取方式</label>
+            <select id="eventExtractionMode" style="width: 100%; padding: 12px; background: #0a1a3a; border: 1px solid #0f3460; border-radius: 8px; color: #fff; font-size: 14px;">
+                <option value="auto">自动提取（推荐）- AI 自动识别剧情事件</option>
+                <option value="manual">手动标注 - 不自动提取，由作者后续标注</option>
+                <option value="hybrid">混合模式 - AI 提取后可编辑确认</option>
+            </select>
+            <small style="color: #666; display: block; margin-top: 6px;">
+                事件是能够改变游戏状态的关键剧情节点，如获得物品、角色关系变化等
+            </small>
+        </div>
         <button class="btn btn-primary" id="startBtn" onclick="startGame()">开始解析</button>
         <div class="error-msg" id="errorMsg"></div>
     </div>
@@ -260,6 +272,17 @@
     <div class="char-select-screen" id="charSelectScreen">
         <h2 id="charSelectTitle">请选择你要扮演的角色</h2>
         <div class="chapter-tabs" id="chapterTabs"></div>
+        <!-- v0.2 新增：生成模式选择 -->
+        <div class="form-group" style="margin: 15px 0; padding: 15px; background: #0f3460; border-radius: 8px;">
+            <label style="display: block; margin-bottom: 10px; font-size: 14px; color: #e94560;">生成模式</label>
+            <select id="generationMode" style="width: 100%; padding: 10px; background: #0a1a3a; border: 1px solid #16213e; border-radius: 6px; color: #fff; font-size: 14px;">
+                <option value="pregenerate">预生成模式（推荐）- 提前生成分支预览</option>
+                <option value="realtime">实时生成模式 - 游玩时按需生成</option>
+            </select>
+            <small style="color: #666; display: block; margin-top: 6px;">
+                预生成模式会在开始前生成所有分支路线图，实时模式则边玩边生成
+            </small>
+        </div>
         <div class="select-hint" id="selectHint">选择一个角色后点击"开始游戏"</div>
         <div class="char-grid" id="charGrid"></div>
         <div style="text-align: center;">
@@ -278,6 +301,10 @@
                 <button class="back-btn" onclick="goBackSelect()">返回选角</button>
                 <div class="chapter-title" id="chapterTitle">第1章</div>
                 <div class="scene-title" id="sceneTitle">场景</div>
+            </div>
+            <div style="display: flex; gap: 10px;">
+                <button class="back-btn" onclick="showSaveModal()" style="border-color: #50c878; color: #50c878;">存档</button>
+                <button class="back-btn" onclick="showLoadModal()">读档</button>
             </div>
             <div class="progress-bar"><div class="progress-fill" id="progressFill" style="width: 0%"></div></div>
         </div>
@@ -327,6 +354,48 @@
             </div>
             <div style="padding:20px;text-align:center;color:#aaa;font-size:14px;" id="cacheModalBody"></div>
             <div style="display:flex;gap:12px;justify-content:center;padding:0 20px 24px;" id="cacheModalActions"></div>
+        </div>
+    </div>
+
+    <!-- v0.2 新增：存档/读档模态框 -->
+    <div class="route-map-modal" id="saveModal">
+        <div class="route-map-content" style="max-width:500px;">
+            <div class="route-map-header">
+                <h3 id="saveModalTitle">存档</h3>
+                <button class="close-btn" onclick="closeSaveModal()">&times;</button>
+            </div>
+            <div style="padding:20px;" id="saveModalBody">
+                <div class="form-group">
+                    <label>存档名称</label>
+                    <input type="text" id="saveName" placeholder="输入存档名称" style="width: 100%; padding: 10px; background: #0a1a3a; border: 1px solid #16213e; border-radius: 6px; color: #fff; font-size: 14px;">
+                </div>
+                <div class="form-group">
+                    <label>存档槽位</label>
+                    <select id="saveSlot" style="width: 100%; padding: 10px; background: #0a1a3a; border: 1px solid #16213e; border-radius: 6px; color: #fff; font-size: 14px;">
+                        <option value="0">槽位 1</option>
+                        <option value="1">槽位 2</option>
+                        <option value="2">槽位 3</option>
+                        <option value="3">槽位 4</option>
+                        <option value="4">槽位 5</option>
+                    </select>
+                </div>
+            </div>
+            <div style="display:flex;gap:12px;justify-content:center;padding:0 20px 24px;">
+                <button class="btn btn-primary" onclick="doSave()">保存</button>
+                <button class="btn btn-secondary" onclick="closeSaveModal()">取消</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="route-map-modal" id="loadModal">
+        <div class="route-map-content" style="max-width:600px;">
+            <div class="route-map-header">
+                <h3>读档</h3>
+                <button class="close-btn" onclick="closeLoadModal()">&times;</button>
+            </div>
+            <div style="padding:20px;max-height:400px;overflow-y:auto;" id="loadModalBody">
+                <div style="text-align:center;color:#888;">加载中...</div>
+            </div>
         </div>
     </div>
 
@@ -420,8 +489,9 @@
                 const enableReview = document.getElementById('enableReview').checked;
                 const artStyle = document.getElementById('artStyle').value;
                 const styleKeywords = document.getElementById('styleKeywords').value.trim();
+                const eventExtractionMode = document.getElementById('eventExtractionMode')?.value || 'auto';
 
-                const response = await fetch(`${API_BASE}/parse`, {
+                const response = await fetch(`${API_BASE}/parse-v2`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     credentials: 'include',
@@ -431,7 +501,8 @@
                         visibility: 'public',
                         enable_review: enableReview,
                         art_style: artStyle,
-                        style_keywords: styleKeywords
+                        style_keywords: styleKeywords,
+                        event_extraction_mode: eventExtractionMode
                     })
                 });
 
@@ -1717,6 +1788,171 @@
 
         function hideLoading() {
             document.getElementById('loadingScreen').classList.remove('active');
+        }
+
+        // ===== v0.2 存档系统 =====
+        let gameStateId = null;  // 当前游戏状态ID
+
+        // 创建游戏状态
+        async function ensureGameState() {
+            if (gameStateId) return gameStateId;
+            try {
+                const res = await fetch(`${API_BASE}/game-state?novel_id=${game.novelId}&character_id=${game.selectedCharId}`, {
+                    method: 'POST',
+                    credentials: 'include'
+                });
+                if (res.ok) {
+                    const data = await res.json();
+                    gameStateId = data.state_id;
+                }
+            } catch (e) {
+                console.warn('创建游戏状态失败:', e);
+            }
+            return gameStateId;
+        }
+
+        // 显示存档模态框
+        async function showSaveModal() {
+            await ensureGameState();
+            const modal = document.getElementById('saveModal');
+            document.getElementById('saveModalTitle').textContent = '存档';
+            document.getElementById('saveName').value = `${game.novel?.chapters?.[selectedChapterIndex]?.title || '存档'} - 场景 ${game.currentScene}`;
+            modal.classList.add('active');
+        }
+
+        function closeSaveModal() {
+            document.getElementById('saveModal').classList.remove('active');
+        }
+
+        // 执行存档
+        async function doSave() {
+            if (!gameStateId) {
+                alert('游戏状态未初始化');
+                return;
+            }
+
+            const saveName = document.getElementById('saveName').value || '存档';
+            const saveSlot = parseInt(document.getElementById('saveSlot').value);
+
+            try {
+                const res = await fetch(`${API_BASE}/save`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include',
+                    body: JSON.stringify({
+                        game_state_id: gameStateId,
+                        save_name: saveName,
+                        save_slot: saveSlot,
+                        play_time: 0
+                    })
+                });
+
+                if (res.ok) {
+                    closeSaveModal();
+                    alert('存档成功！');
+                } else {
+                    const err = await res.json();
+                    alert('存档失败: ' + (err.detail || '未知错误'));
+                }
+            } catch (e) {
+                alert('存档失败: ' + e.message);
+            }
+        }
+
+        // 显示读档模态框
+        async function showLoadModal() {
+            const modal = document.getElementById('loadModal');
+            const body = document.getElementById('loadModalBody');
+            body.innerHTML = '<div style="text-align:center;color:#888;">加载中...</div>';
+            modal.classList.add('active');
+
+            try {
+                const res = await fetch(`${API_BASE}/saves/${game.novelId}`, {
+                    credentials: 'include'
+                });
+
+                if (res.ok) {
+                    const data = await res.json();
+                    const saves = data.saves || [];
+
+                    if (saves.length === 0) {
+                        body.innerHTML = '<div style="text-align:center;color:#888;">暂无存档</div>';
+                    } else {
+                        body.innerHTML = saves.map(save => `
+                            <div style="display:flex;justify-content:space-between;align-items:center;padding:12px;background:#0f3460;margin:8px 0;border-radius:8px;">
+                                <div>
+                                    <div style="font-weight:bold;color:#fff;">${save.save_name || '未命名存档'}</div>
+                                    <div style="font-size:12px;color:#888;margin-top:4px;">${save.created_at} · ${save.route || '主线'}</div>
+                                </div>
+                                <div style="display:flex;gap:8px;">
+                                    <button onclick="loadSave('${save.id}')" style="background:#e94560;color:#fff;border:none;padding:6px 16px;border-radius:6px;cursor:pointer;">读取</button>
+                                    <button onclick="deleteSave('${save.id}')" style="background:none;border:1px solid #e94560;color:#e94560;padding:6px 12px;border-radius:6px;cursor:pointer;">删除</button>
+                                </div>
+                            </div>
+                        `).join('');
+                    }
+                } else {
+                    body.innerHTML = '<div style="text-align:center;color:#e94560;">加载失败</div>';
+                }
+            } catch (e) {
+                body.innerHTML = '<div style="text-align:center;color:#e94560;">加载失败: ' + e.message + '</div>';
+            }
+        }
+
+        function closeLoadModal() {
+            document.getElementById('loadModal').classList.remove('active');
+        }
+
+        // 读取存档
+        async function loadSave(saveId) {
+            try {
+                const res = await fetch(`${API_BASE}/save/${saveId}`, {
+                    credentials: 'include'
+                });
+
+                if (res.ok) {
+                    const data = await res.json();
+                    const state = data.state;
+
+                    // 恢复游戏状态
+                    game.currentScene = parseInt(state.current_node_id?.replace('scene_', '') || 0);
+                    game.currentRoute = state.current_route || 'main';
+                    game.flags = state.flags || {};
+
+                    closeLoadModal();
+
+                    // 重新渲染
+                    renderCharacters();
+                    showCurrentDialogue();
+
+                    alert('读档成功！');
+                } else {
+                    const err = await res.json();
+                    alert('读档失败: ' + (err.detail || '未知错误'));
+                }
+            } catch (e) {
+                alert('读档失败: ' + e.message);
+            }
+        }
+
+        // 删除存档
+        async function deleteSave(saveId) {
+            if (!confirm('确定要删除这个存档吗？')) return;
+
+            try {
+                const res = await fetch(`${API_BASE}/save/${saveId}`, {
+                    method: 'DELETE',
+                    credentials: 'include'
+                });
+
+                if (res.ok) {
+                    showLoadModal();  // 刷新列表
+                } else {
+                    alert('删除失败');
+                }
+            } catch (e) {
+                alert('删除失败: ' + e.message);
+            }
         }
 
         // ===== 页面初始化 =====
