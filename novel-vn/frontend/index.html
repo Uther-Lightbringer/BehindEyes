@@ -1,0 +1,1709 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>视觉小说播放器</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: "Microsoft YaHei", sans-serif; background: #1a1a2e; color: #eee; min-height: 100vh; }
+
+        /* 导航栏 */
+        .navbar { position: sticky; top: 0; z-index: 500; display: flex; justify-content: space-between; align-items: center; padding: 12px 30px; background: #16213e; border-bottom: 1px solid #333; }
+        .navbar-left { display: flex; align-items: center; gap: 15px; }
+        .navbar-brand { font-size: 20px; color: #e94560; font-weight: bold; cursor: pointer; text-decoration: none; }
+        .navbar-brand:hover { text-decoration: underline; }
+        .nav-link { padding: 8px 16px; border-radius: 8px; background: #0f3460; color: #fff; font-size: 14px; cursor: pointer; border: none; text-decoration: none; transition: all 0.3s; }
+        .nav-link:hover { background: #1a4a80; }
+        .nav-link.disabled { opacity: 0.5; cursor: not-allowed; background: #333; }
+        .nav-link.hidden { display: none; }
+        .navbar-right { display: flex; align-items: center; gap: 12px; }
+        .nav-user { color: #aaa; font-size: 14px; }
+        .nav-user strong { color: #fff; }
+        .nav-admin-badge { background: #ffd700; color: #000; font-size: 11px; padding: 2px 8px; border-radius: 10px; font-weight: bold; }
+        .nav-logout-btn { background: none; border: 1px solid #e94560; color: #e94560; padding: 5px 14px; border-radius: 6px; cursor: pointer; font-size: 13px; transition: all 0.3s; }
+        .nav-logout-btn:hover { background: #e94560; color: #fff; }
+
+        /* 首页小说列表 */
+        .home-screen { max-width: 1000px; margin: 50px auto; padding: 30px; }
+        .home-screen h2 { font-size: 22px; color: #e94560; margin-bottom: 20px; text-align: center; }
+        .novel-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 20px; margin-top: 20px; }
+        .novel-card { background: #16213e; border: 2px solid #0f3460; border-radius: 12px; padding: 25px; cursor: pointer; transition: all 0.3s; position: relative; }
+        .novel-card:hover { border-color: #e94560; transform: translateY(-3px); }
+        .novel-card h3 { font-size: 18px; margin-bottom: 8px; }
+        .novel-card-meta { font-size: 13px; color: #888; margin-bottom: 10px; }
+        .novel-visibility { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; padding: 3px 10px; border-radius: 10px; }
+        .novel-visibility.public { background: #0a3a0a; color: #50c878; }
+        .novel-visibility.private { background: #3a2a0a; color: #ffd700; }
+        .novel-empty { text-align: center; color: #888; padding: 60px 20px; font-size: 16px; }
+        .novel-empty a { color: #e94560; }
+        .novel-actions { display: flex; gap: 8px; margin-top: 10px; }
+        .novel-action-btn { padding: 5px 12px; border-radius: 6px; font-size: 12px; cursor: pointer; border: 1px solid; transition: all 0.3s; background: none; }
+        .novel-action-btn.visibility-btn { border-color: #4a90d9; color: #4a90d9; }
+        .novel-action-btn.visibility-btn:hover { background: #4a90d9; color: #fff; }
+        .novel-action-btn.delete-btn { border-color: #e94560; color: #e94560; }
+        .novel-action-btn.delete-btn:hover { background: #e94560; color: #fff; }
+
+        /* 上传界面 */
+        .upload-screen { max-width: 800px; margin: 50px auto; padding: 40px; background: #16213e; border-radius: 16px; text-align: center; }
+        .upload-screen h1 { font-size: 28px; margin-bottom: 10px; color: #e94560; }
+        .upload-screen p { color: #888; margin-bottom: 30px; }
+        .form-group { margin-bottom: 20px; }
+        .form-group label { display: block; margin-bottom: 10px; font-size: 16px; }
+        .form-group input[type="text"] { width: 100%; padding: 12px; border: 2px solid #0f3460; border-radius: 8px; background: #1a1a2e; color: #fff; font-size: 16px; }
+        .file-input-wrapper { position: relative; margin: 20px 0; }
+        .file-input { display: none; }
+        .file-label { display: inline-block; padding: 20px 40px; background: #0f3460; border: 2px dashed #e94560; border-radius: 12px; cursor: pointer; font-size: 16px; transition: all 0.3s; }
+        .file-label:hover { background: #e94560; }
+        .file-list { margin-top: 20px; text-align: left; }
+        .file-item { padding: 10px 15px; background: #0f3460; margin: 5px 0; border-radius: 6px; display: flex; justify-content: space-between; align-items: center; }
+        .file-item .remove { color: #e94560; cursor: pointer; font-size: 18px; }
+        .btn { padding: 15px 40px; border: none; border-radius: 8px; font-size: 18px; cursor: pointer; transition: all 0.3s; margin-top: 20px; }
+        .btn-primary { background: #e94560; color: #fff; }
+        .btn-primary:hover { background: #ff6b6b; transform: scale(1.05); }
+        .btn-primary:disabled { background: #555; cursor: not-allowed; transform: none; }
+        .btn-secondary { background: #0f3460; color: #fff; }
+        .btn-secondary:hover { background: #1a4a80; }
+        .error-msg { color: #e94560; margin-top: 10px; font-size: 14px; }
+
+        /* 加载界面 */
+        .loading { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.9); display: none; flex-direction: column; justify-content: center; align-items: center; z-index: 1000; }
+        .loading.active { display: flex; }
+        .loading-spinner { width: 60px; height: 60px; border: 4px solid #333; border-top-color: #e94560; border-radius: 50%; animation: spin 1s linear infinite; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .loading-text { margin-top: 20px; font-size: 18px; color: #e94560; }
+        .loading-progress { margin-top: 10px; font-size: 14px; color: #888; }
+
+        /* 角色选择界面 */
+        .char-select-screen { display: none; max-width: 900px; margin: 30px auto; padding: 30px; background: #16213e; border-radius: 16px; }
+        .char-select-screen.active { display: block; }
+        .char-select-screen h2 { font-size: 24px; color: #e94560; margin-bottom: 20px; text-align: center; }
+        .chapter-tabs { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 20px; justify-content: center; }
+        .chapter-tab { padding: 8px 20px; background: #0f3460; border: none; border-radius: 20px; color: #fff; cursor: pointer; font-size: 14px; }
+        .chapter-tab.active { background: #e94560; }
+        .chapter-tab:disabled { background: #333; color: #666; cursor: not-allowed; }
+        .char-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 20px; margin: 20px 0; }
+        .char-card { background: #0f3460; border: 3px solid #333; border-radius: 12px; padding: 20px; cursor: pointer; transition: all 0.3s; text-align: center; position: relative; overflow: hidden; }
+        .char-card:hover { border-color: #e94560; transform: translateY(-5px); }
+        .char-card.selected { border-color: #e94560; background: rgba(233,69,96,0.2); box-shadow: 0 0 20px rgba(233,69,96,0.3); }
+        .char-card.not-playable { opacity: 0.5; cursor: not-allowed; }
+        .char-card.not-playable:hover { border-color: #333; transform: none; }
+        .char-card-avatar { width: 80px; height: 80px; border-radius: 50%; object-fit: cover; border: 2px solid #333; margin-bottom: 10px; background: #2a2a4a; }
+        .char-card-avatar.placeholder { background: linear-gradient(135deg, #4a90d9, #e94560); display: flex; align-items: center; justify-content: center; font-size: 28px; color: #fff; font-weight: bold; }
+        .char-card-name { font-size: 20px; font-weight: bold; color: #fff; margin-bottom: 10px; }
+        .char-card-personality { font-size: 12px; color: #888; margin-bottom: 8px; }
+        .char-card-badge { display: inline-block; padding: 3px 10px; background: #e94560; border-radius: 10px; font-size: 11px; }
+        .char-card-npc { background: #555; }
+        .select-hint { text-align: center; color: #888; margin: 20px 0; font-size: 14px; }
+
+        /* 游戏界面 */
+        .game-screen { display: none; height: 100vh; position: relative; overflow: hidden; }
+        .game-screen.active { display: block; }
+        .background { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background-size: cover; background-position: center; filter: brightness(0.4); transition: opacity 0.8s; }
+        .background.default { background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%); }
+        .scene-transition { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: #000; opacity: 0; pointer-events: none; transition: opacity 0.5s; z-index: 50; }
+        .scene-transition.active { opacity: 1; pointer-events: all; }
+
+        .top-bar { position: absolute; top: 0; left: 0; width: 100%; padding: 70px 30px 20px; background: linear-gradient(180deg, rgba(0,0,0,0.9) 0%, rgba(0,0,0,0.5) 70%, transparent 100%); display: flex; justify-content: space-between; align-items: center; z-index: 10; }
+        .top-bar-left { display: flex; align-items: center; gap: 20px; }
+        .back-btn { background: none; border: 1px solid #e94560; color: #e94560; padding: 5px 15px; border-radius: 5px; cursor: pointer; font-size: 12px; }
+        .back-btn:hover { background: #e94560; color: #fff; }
+        .chapter-title { font-size: 16px; color: #e94560; }
+        .scene-title { font-size: 15px; color: #fff; background: rgba(15,52,96,0.9); padding: 6px 16px; border-radius: 12px; border: 1px solid rgba(233,69,96,0.3); font-weight: 500; }
+        .progress-bar { width: 150px; height: 6px; background: rgba(51,51,51,0.8); border-radius: 3px; overflow: hidden; }
+        .progress-fill { height: 100%; background: #e94560; transition: width 0.3s; }
+
+        .character-layer { position: absolute; bottom: 250px; left: 0; width: 100%; height: calc(100% - 250px); display: flex; justify-content: center; align-items: flex-end; gap: 40px; padding: 0 60px; }
+        .character { width: 180px; height: 400px; background: rgba(42,42,74,0.6); border-radius: 12px; display: flex; align-items: center; justify-content: center; border: 2px solid rgba(51,51,51,0.5); transition: all 0.3s; position: relative; overflow: hidden; }
+        .character-sprite { width: 100%; height: 100%; object-fit: cover; border-radius: 10px; position: absolute; top: 0; left: 0; }
+        .character .char-bottom-info { position: absolute; bottom: 0; left: 0; width: 100%; padding: 10px; background: linear-gradient(transparent, rgba(0,0,0,0.85)); text-align: center; font-size: 11px; color: #aaa; }
+        .character.speaking { border-color: #e94560; box-shadow: 0 0 30px rgba(233,69,96,0.7); transform: scale(1.08); }
+        .character.npc-highlight { border-color: #ffd700; box-shadow: 0 0 30px rgba(255,215,0,0.7); }
+        .character-name-badge { position: absolute; top: -28px; left: 50%; transform: translateX(-50%); padding: 4px 14px; border-radius: 12px; font-size: 13px; font-weight: 600; white-space: nowrap; background: #e94560; }
+        .character.npc-highlight .character-name-badge { background: #ffd700; color: #000; }
+        .character:first-child { margin-left: -100px; }
+
+        .dialogue-box { position: absolute; bottom: 0; left: 0; width: 100%; height: 250px; background: linear-gradient(transparent, rgba(0,0,0,0.95)); padding: 30px 50px; }
+        .speaker-name { color: #e94560; font-size: 18px; font-weight: bold; margin-bottom: 8px; }
+        .speaker-name.npc { color: #ffd700; }
+        .dialogue-content { font-size: 17px; line-height: 1.8; max-width: 800px; min-height: 60px; }
+        .continue-hint { position: absolute; bottom: 20px; right: 50px; color: #888; font-size: 14px; animation: blink 1.5s infinite; }
+        @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.3} }
+
+        .choice-panel { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: rgba(22,33,62,0.98); padding: 40px; border-radius: 16px; border: 2px solid #e94560; display: none; min-width: 450px; max-width: 600px; }
+        .choice-panel.active { display: block; }
+        .choice-panel h3 { color: #e94560; margin-bottom: 10px; text-align: center; }
+        .choice-prompt { color: #aaa; font-size: 14px; text-align: center; margin-bottom: 20px; }
+        .choice-btn { display: block; width: 100%; padding: 15px 25px; margin: 10px 0; background: #0f3460; border: 2px solid #0f3460; border-radius: 8px; color: #fff; font-size: 16px; cursor: pointer; text-align: left; transition: all 0.3s; }
+        .choice-btn:hover { background: #e94560; border-color: #e94560; transform: translateX(8px); }
+        .choice-effect { font-size: 12px; color: #888; margin-top: 5px; }
+
+        .chapter-end { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.95); display: none; flex-direction: column; justify-content: center; align-items: center; z-index: 100; }
+        .chapter-end.active { display: flex; }
+        .chapter-end h2 { font-size: 36px; color: #e94560; margin-bottom: 15px; }
+        .chapter-end .stats { color: #888; margin-bottom: 30px; font-size: 14px; line-height: 1.8; text-align: center; }
+        .chapter-end .stats span { color: #e94560; }
+        .chapter-end-buttons { display: flex; gap: 15px; margin-top: 10px; }
+
+        .route-map-modal { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.9); display: none; justify-content: center; align-items: center; z-index: 200; }
+        .route-map-modal.active { display: flex; }
+        .route-map-content { background: #16213e; border-radius: 16px; border: 2px solid #e94560; width: 90%; max-width: 900px; max-height: 80vh; overflow: hidden; display: flex; flex-direction: column; }
+        .route-map-header { padding: 20px; background: #0f3460; display: flex; justify-content: space-between; align-items: center; }
+        .route-map-header h3 { color: #e94560; margin: 0; }
+        .close-btn { background: none; border: none; color: #fff; font-size: 28px; cursor: pointer; line-height: 1; }
+        .close-btn:hover { color: #e94560; }
+        .route-map-body { padding: 0; overflow: hidden; flex: 1; position: relative; background: #0a0a1a; cursor: grab; }
+        .route-map-body:active { cursor: grabbing; }
+        .route-map-body svg { display: block; }
+
+        .flowchart { display: flex; flex-direction: column; gap: 0; align-items: center; }
+        .flow-node { background: #0f3460; border: 2px solid #333; border-radius: 10px; padding: 12px 20px; min-width: 200px; max-width: 280px; text-align: center; position: relative; }
+        .flow-node.scene { border-color: #4a90d9; }
+        .flow-node.choice { border-color: #e94560; border-radius: 0; }
+        .flow-node.end { border-color: #50c878; }
+        .flow-node.current { background: #e94560; box-shadow: 0 0 20px rgba(233,69,96,0.5); }
+        .flow-node-title { font-size: 14px; font-weight: bold; color: #fff; margin-bottom: 5px; }
+        .flow-node-desc { font-size: 12px; color: #888; }
+        .flow-children { display: flex; gap: 30px; justify-content: center; flex-wrap: wrap; }
+        .flow-branch { display: flex; flex-direction: column; align-items: center; }
+        .flow-arrow { color: #888; font-size: 20px; margin: 8px 0; }
+        .flow-label { background: #e94560; color: #fff; font-size: 11px; padding: 3px 10px; border-radius: 10px; margin-bottom: 5px; max-width: 150px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    </style>
+</head>
+<body>
+    <!-- 导航栏 -->
+    <nav class="navbar" id="navbar">
+        <div class="navbar-left">
+            <a class="navbar-brand" href="index.html">NovelVN</a>
+            <button class="nav-link hidden" id="navHomeBtn" onclick="showHome()">首页</button>
+            <button class="nav-link hidden" id="navUploadBtn" onclick="ensureLoggedInForUpload()">上传</button>
+            <button class="nav-link hidden" id="navAdminBtn" onclick="location.href='admin.html'">管理面板</button>
+        </div>
+        <div class="navbar-right">
+            <a class="nav-link" id="navLoginBtn" href="login.html">登录/注册</a>
+            <div class="nav-user hidden" id="navUserArea">
+                <strong id="navUsername"></strong>
+                <span class="nav-admin-badge" id="navAdminBadge" style="display:none;">管理员</span>
+            </div>
+            <button class="nav-logout-btn hidden" id="navLogoutBtn" onclick="logout()">退出</button>
+        </div>
+    </nav>
+
+    <!-- 首页（小说列表） -->
+    <div class="home-screen" id="homeScreen" style="display:none;">
+        <h2>小说列表</h2>
+        <div style="text-align:center;margin-bottom:20px;">
+            <button class="nav-link" onclick="ensureLoggedInForUpload()" style="font-size:16px;">+ 上传新小说</button>
+        </div>
+        <div class="novel-grid" id="novelGrid"></div>
+        <div class="novel-empty hidden" id="novelEmpty">
+            暂无小说。点击 <a href="javascript:void(0)" onclick="ensureLoggedInForUpload()">上传新小说</a> 开始创建。
+        </div>
+    </div>
+    <div class="upload-screen" id="uploadScreen">
+        <h1>视觉小说生成器</h1>
+        <p>上传小说章节，AI解析生成角色卡，选择角色后以该视角体验剧情</p>
+        <div class="form-group">
+            <label>小说名称</label>
+            <input type="text" id="novelTitle" placeholder="输入小说名称" value="我的视觉小说">
+        </div>
+        <div class="form-group">
+            <label>上传章节文件</label>
+            <div class="file-input-wrapper">
+                <input type="file" id="fileInput" class="file-input" accept=".txt,.md" multiple>
+                <label for="fileInput" class="file-label">点击选择文件 或 拖拽文件到此处<br><small>支持 .txt 和 .md 文件</small></label>
+            </div>
+            <div class="file-list" id="fileList"></div>
+        </div>
+        <button class="btn btn-primary" id="startBtn" onclick="startGame()">开始解析</button>
+        <div class="error-msg" id="errorMsg"></div>
+    </div>
+
+    <!-- 加载界面 -->
+    <div class="loading" id="loadingScreen">
+        <div class="loading-spinner"></div>
+        <div class="loading-text" id="loadingText">正在解析...</div>
+        <div class="loading-progress" id="loadingProgress"></div>
+    </div>
+
+    <!-- 角色选择界面 -->
+    <div class="char-select-screen" id="charSelectScreen">
+        <h2 id="charSelectTitle">请选择你要扮演的角色</h2>
+        <div class="chapter-tabs" id="chapterTabs"></div>
+        <div class="select-hint" id="selectHint">选择一个角色后点击"开始游戏"</div>
+        <div class="char-grid" id="charGrid"></div>
+        <div style="text-align: center;">
+            <button class="btn btn-primary" id="playBtn" onclick="startPlay()" disabled>开始游戏</button>
+            <button class="btn btn-secondary" onclick="goBackUpload()">重新上传</button>
+        </div>
+    </div>
+
+    <!-- 游戏界面 -->
+    <div class="game-screen" id="gameScreen">
+        <div class="background default" id="background"></div>
+        <div class="scene-transition" id="sceneTransition"></div>
+
+        <div class="top-bar">
+            <div class="top-bar-left">
+                <button class="back-btn" onclick="goBackSelect()">返回选角</button>
+                <div class="chapter-title" id="chapterTitle">第1章</div>
+                <div class="scene-title" id="sceneTitle">场景</div>
+            </div>
+            <div class="progress-bar"><div class="progress-fill" id="progressFill" style="width: 0%"></div></div>
+        </div>
+
+        <div class="character-layer" id="characterLayer"></div>
+
+        <div class="dialogue-box" id="dialogueBox">
+            <div class="speaker-name" id="speakerName">旁白</div>
+            <div class="dialogue-content" id="dialogueContent">点击继续...</div>
+            <div class="continue-hint" id="continueHint">▼ 点击继续</div>
+        </div>
+
+        <div class="choice-panel" id="choicePanel">
+            <h3>请做出选择</h3>
+            <div class="choice-prompt" id="choicePrompt"></div>
+            <div id="choiceList"></div>
+        </div>
+
+        <div class="chapter-end" id="chapterEnd">
+            <h2 id="endTitle">第一章 完</h2>
+            <div class="stats" id="endStats"></div>
+            <div class="chapter-end-buttons">
+                <button class="btn btn-secondary" id="viewRouteBtn" onclick="showRouteMap()">查看路线图</button>
+                <button class="btn btn-secondary" id="replayBtn" onclick="replayChapter()">重玩此章节</button>
+                <button class="btn btn-primary" id="nextChapterBtn" onclick="nextChapter()">继续下一章</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 路线图模态框 -->
+    <div class="route-map-modal" id="routeMapModal">
+        <div class="route-map-content">
+            <div class="route-map-header">
+                <h3 id="routeMapTitle">章节路线图</h3>
+                <button class="close-btn" onclick="closeRouteMap()">&times;</button>
+            </div>
+            <div class="route-map-body" id="routeMapBody"></div>
+        </div>
+    </div>
+
+    <!-- 缓存剧情确认模态框 -->
+    <div class="route-map-modal" id="cacheModal">
+        <div class="route-map-content" style="max-width:480px;">
+            <div class="route-map-header" style="text-align:center;">
+                <h3>发现已有该角色的剧情</h3>
+                <button class="close-btn" onclick="closeCacheModal()">&times;</button>
+            </div>
+            <div style="padding:20px;text-align:center;color:#aaa;font-size:14px;" id="cacheModalBody"></div>
+            <div style="display:flex;gap:12px;justify-content:center;padding:0 20px 24px;" id="cacheModalActions"></div>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = '/api';
+        const API_ORIGIN = ''; // 用于图片等路径，走同源
+
+        // ===== 认证状态 =====
+        let currentUser = null; // null = 未登录, { id, username, role } = 已登录
+        let isOnHomePage = false;
+        let currentView = 'home'; // 'home', 'upload', 'charSelect', 'game'
+
+        async function initAuth() {
+            try {
+                const res = await fetch(`${API_BASE}/auth/me`, { credentials: 'include' });
+                const data = await res.json();
+                if (data.logged_in) {
+                    currentUser = data.user;
+                }
+            } catch(e) {
+                console.log('Auth check failed:', e);
+            }
+
+            updateNavbar();
+            showHome();
+        }
+
+        function updateNavbar() {
+            const loginBtn = document.getElementById('navLoginBtn');
+            const userArea = document.getElementById('navUserArea');
+            const logoutBtn = document.getElementById('navLogoutBtn');
+            const navUsername = document.getElementById('navUsername');
+            const adminBadge = document.getElementById('navAdminBadge');
+
+            if (currentUser) {
+                loginBtn.classList.add('hidden');
+                userArea.classList.remove('hidden');
+                logoutBtn.classList.remove('hidden');
+                navUsername.textContent = currentUser.username;
+
+                if (currentUser.role === 'admin') {
+                    adminBadge.style.display = 'inline';
+                    document.getElementById('navAdminBtn').classList.remove('hidden');
+                } else {
+                    adminBadge.style.display = 'none';
+                    document.getElementById('navAdminBtn').classList.add('hidden');
+                }
+            } else {
+                loginBtn.classList.remove('hidden');
+                userArea.classList.add('hidden');
+                logoutBtn.classList.add('hidden');
+                adminBadge.style.display = 'none';
+                document.getElementById('navAdminBtn').classList.add('hidden');
+            }
+        }
+
+        function ensureLoggedInForUpload() {
+            if (!currentUser) {
+                const returnUrl = encodeURIComponent(location.href);
+                window.location.href = `login.html?return=${returnUrl}`;
+                return;
+            }
+            showUploadScreen();
+        }
+
+        async function startGame() {
+            // 这个函数也需要登录
+            if (!currentUser) {
+                const returnUrl = encodeURIComponent(location.href);
+                window.location.href = `login.html?return=${returnUrl}`;
+                return;
+            }
+            _doStartGame();
+        }
+
+        async function _doStartGame() {
+            const errorMsg = document.getElementById('errorMsg');
+            const title = document.getElementById('novelTitle').value.trim();
+            if (!uploadedFiles.length) { errorMsg.textContent = '请至少上传一个章节文件'; return; }
+            errorMsg.textContent = '';
+
+            showLoading('正在读取文件...');
+            try {
+                const chapters = [];
+                for (let i = 0; i < uploadedFiles.length; i++) {
+                    const file = uploadedFiles[i];
+                    const content = await file.text();
+                    chapters.push({ chapter_id: i, title: file.name.replace(/\.(txt|md)$/i, ''), content });
+                }
+
+                const response = await fetch(`${API_BASE}/parse`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include',
+                    body: JSON.stringify({ novel_title: title, chapters, visibility: 'public' })
+                });
+
+                if (!response.ok) {
+                    const errData = await response.json().catch(() => null);
+                    if (errData && errData.detail === '请先登录') {
+                        const returnUrl = encodeURIComponent(location.href);
+                        window.location.href = `login.html?return=${returnUrl}`;
+                        return;
+                    }
+                    throw new Error('发起任务失败' + (errData && errData.detail ? ': ' + errData.detail : ''));
+                }
+
+                const taskInfo = await response.json();
+                updateLoading('正在解析角色...');
+
+                const result = await pollTaskStatus(taskInfo.task_id);
+                game.novelId = result.result.novel_id;
+                game.novel = result.result;
+
+                showCharSelect();
+
+            } catch (err) {
+                console.error(err);
+                hideLoading();
+                alert('解析失败: ' + err.message);
+                showUploadScreen();
+            }
+        }
+
+        async function logout() {
+            try {
+                await fetch(`${API_BASE}/auth/logout`, {
+                    method: 'POST',
+                    credentials: 'include'
+                });
+            } catch(e) {}
+            currentUser = null;
+            updateNavbar();
+            showHome();
+        }
+
+        function goToLogin() {
+            const returnUrl = encodeURIComponent(location.href);
+            window.location.href = `login.html?return=${returnUrl}`;
+        }
+
+        function handleAPI401(response) {
+            if (response.status === 401) {
+                goToLogin();
+                return true;
+            }
+            return false;
+        }
+
+        // ===== 首页（小说列表）=====
+        async function showHome() {
+            hideAllScreens();
+            isOnHomePage = true;
+            currentView = 'home';
+
+            // 隐藏所有其他屏幕
+            document.getElementById('homeScreen').style.display = 'block';
+            document.getElementById('navHomeBtn').classList.remove('hidden');
+            document.getElementById('navUploadBtn').classList.remove('hidden');
+
+            loadNovelList();
+        }
+
+        async function loadNovelList() {
+            const grid = document.getElementById('novelGrid');
+            const emptyMsg = document.getElementById('novelEmpty');
+
+            try {
+                const res = await fetch(`${API_BASE}/novels`, { credentials: 'include' });
+                const data = await res.json();
+                const novels = data.novels || [];
+
+                if (novels.length === 0) {
+                    grid.innerHTML = '';
+                    emptyMsg.classList.remove('hidden');
+                    return;
+                }
+
+                emptyMsg.classList.add('hidden');
+                grid.innerHTML = novels.map(novel => {
+                    const isOwner = currentUser && currentUser.id === novel.owner_id;
+                    const isAdmin = currentUser && currentUser.role === 'admin';
+                    const canManage = isOwner || isAdmin;
+                    const visClass = novel.visibility === 'public' ? 'public' : 'private';
+                    const visIcon = novel.visibility === 'public' ? '🔓 公开' : '🔒 私有';
+                    const chapterCount = novel.chapter_count || novel.chapter_num || '';
+
+                    // Owner/Admin 可以切换可见性
+                    const visBtn = canManage && !novel.owner_name /* novel object from admin endpoint has owner_name */
+                        ? `<button class="novel-action-btn visibility-btn" onclick="toggleVisibility('${novel.id}', event)">${novel.visibility === 'public' ? '转为私有' : '转为公开'}</button>`
+                        : '';
+
+                    // Owner/Admin 可以删除
+                    const delBtn = canManage
+                        ? `<button class="novel-action-btn delete-btn" onclick="deleteNovel('${novel.id}', event)">删除</button>`
+                        : '';
+
+                    const ownerLabel = novel.owner_name ? `作者: ${novel.owner_name}` : '';
+
+                    return `
+                    <div class="novel-card" onclick="openNovel('${novel.id}')">
+                        <h3>${novel.title}</h3>
+                        <div class="novel-card-meta">${ownerLabel} · ${novel.visibility === 'public' ? '公开' : '私有'}</div>
+                        <div class="novel-visibility ${visClass}">${visIcon}</div>
+                        <div class="novel-actions" onclick="event.stopPropagation()">
+                            ${visBtn}${delBtn}
+                        </div>
+                    </div>
+                    `;
+                }).join('');
+            } catch (e) {
+                grid.innerHTML = '<div class="novel-empty">加载失败</div>';
+            }
+        }
+
+        async function toggleVisibility(novelId, event) {
+            event.stopPropagation();
+            if (!currentUser) { goToLogin(); return; }
+            try {
+                const res = await fetch(`${API_BASE}/novel/${novelId}/visibility`, {
+                    method: 'POST',
+                    credentials: 'include'
+                });
+                if (res.ok) loadNovelList();
+                else if (res.status === 401) goToLogin();
+            } catch(e) {}
+        }
+
+        async function deleteNovel(novelId, event) {
+            event.stopPropagation();
+            if (!confirm('确定要删除这部小说吗？此操作不可恢复。')) return;
+            if (!currentUser) { goToLogin(); return; }
+            try {
+                const res = await fetch(`${API_BASE}/novel/${novelId}`, {
+                    method: 'DELETE',
+                    credentials: 'include'
+                });
+                if (res.ok) loadNovelList();
+                else if (res.status === 401) goToLogin();
+            } catch(e) {}
+        }
+
+        async function openNovel(novelId) {
+            showLoading('正在加载小说...');
+            try {
+                const res = await fetch(`${API_BASE}/novel/${novelId}`, { credentials: 'include' });
+
+                if (res.status === 403) {
+                    hideLoading();
+                    alert('此小说为私有小说，请先登录查看');
+                    goToLogin();
+                    return;
+                }
+                if (!res.ok) {
+                    hideLoading();
+                    alert('加载失败');
+                    showHome();
+                    return;
+                }
+
+                const novel = await res.json();
+                game.novelId = novel.novel_id;
+                game.novel = novel;
+
+                // 如果已经有生成好的场景，直接进入游戏
+                const chapter = novel.chapters[0];
+                if (chapter && chapter.generated_scenes) {
+                    showCharSelect();
+                    selectedChapterIndex = 0;
+                    renderChapterTabs();
+                    renderCharGrid();
+                    return;
+                }
+
+                hideLoading();
+                showCharSelect();
+                selectedChapterIndex = 0;
+                renderChapterTabs();
+                renderCharGrid();
+
+            } catch(e) {
+                console.error(e);
+                hideLoading();
+                alert('加载失败: ' + e.message);
+                showHome();
+            }
+        }
+
+
+        // ===== 游戏状态 =====
+        const game = {
+            novelId: null,
+            novel: null,
+            selectedChapter: 0,
+            selectedCharId: null,
+            currentScene: 0,
+            currentDialogue: 0,
+            totalDialogues: 0,
+            doneDialogues: 0,
+            flags: {},
+            route: null,
+            isWaiting: true,
+            scenes: [],
+            choices: [],
+            characters: [],
+            playerCharName: ''
+        };
+
+        let selectedChapterIndex = 0;
+
+        // ===== 文件上传 =====
+        let uploadedFiles = [];
+        document.getElementById('fileInput').addEventListener('change', (e) => {
+            for (const file of e.target.files) {
+                if (!uploadedFiles.find(f => f.name === file.name)) uploadedFiles.push(file);
+            }
+            renderFileList();
+        });
+
+        function renderFileList() {
+            document.getElementById('fileList').innerHTML = uploadedFiles.map((f, i) =>
+                `<div class="file-item"><span>${i + 1}. ${f.name}</span><span class="remove" onclick="removeFile(${i})">&times;</span></div>`
+            ).join('');
+        }
+
+        function removeFile(index) { uploadedFiles.splice(index, 1); renderFileList(); }
+
+        // ===== 开始解析（已移至 _doStartGame，startGame 是入口）=====
+
+        async function pollTaskStatus(taskId) {
+            console.log('pollTaskStatus called with taskId:', taskId);
+            const maxAttempts = 300, intervalMs = 2000;
+            for (let i = 0; i < maxAttempts; i++) {
+                try {
+                    console.log(`Polling attempt ${i+1}/${maxAttempts}`);
+                    const response = await fetch(`${API_BASE}/parse/${taskId}/status`);
+                    console.log('Status response:', response.status);
+                    if (!response.ok) throw new Error('获取状态失败: ' + response.status);
+                    const status = await response.json();
+                    console.log('Status:', status.status, status.message);
+                    updateLoading(status.message, status.progress);
+
+                    if (status.status === 'completed') {
+                        console.log('Task completed, fetching result...');
+                        const resultResponse = await fetch(`${API_BASE}/parse/${taskId}/result`);
+                        if (!resultResponse.ok) throw new Error('获取结果失败: ' + resultResponse.status);
+                        const result = await resultResponse.json();
+                        console.log('Result received');
+                        return result;
+                    }
+                    if (status.status === 'failed') throw new Error(status.error || '解析失败');
+                    console.log('Waiting', intervalMs, 'ms...');
+                    await new Promise(resolve => setTimeout(resolve, intervalMs));
+                } catch (err) {
+                    console.error('Poll error:', err);
+                    throw err;
+                }
+            }
+            throw new Error('解析超时');
+        }
+
+        // ===== 屏幕切换 =====
+        function showUploadScreen() {
+            hideAllScreens();
+            isOnHomePage = false;
+            currentView = 'upload';
+            document.getElementById('uploadScreen').style.display = 'block';
+            uploadedFiles = [];
+            document.getElementById('novelTitle').value = '';
+        }
+
+        // ===== 角色选择界面 =====
+        function showCharSelect() {
+            hideLoading();
+            hideAllScreens();
+            isOnHomePage = false;
+            currentView = 'charSelect';
+            document.getElementById('charSelectScreen').classList.add('active');
+
+            // 渲染章节标签
+            renderChapterTabs();
+
+            selectedChapterIndex = 0;
+            renderCharGrid();
+        }
+
+        function renderChapterTabs() {
+            const tabs = document.getElementById('chapterTabs');
+            tabs.innerHTML = game.novel.chapters.map((ch, i) =>
+                `<button class="chapter-tab ${i === 0 ? 'active' : ''}" onclick="selectChapterTab(${i})">${ch.title}</button>`
+            ).join('');
+        }
+
+        function selectChapterTab(index) {
+            document.querySelectorAll('.chapter-tab').forEach((t, i) => {
+                t.classList.toggle('active', i === index);
+            });
+            selectedChapterIndex = index;
+            game.selectedCharId = null;
+            document.getElementById('playBtn').disabled = true;
+            renderCharGrid();
+        }
+
+        function renderCharGrid() {
+            const chapter = game.novel.chapters[selectedChapterIndex];
+            const characters = chapter.characters || [];
+
+            document.getElementById('charGrid').innerHTML = characters.map(char => {
+                const hasImage = char.image_url;
+                const avatarSrc = hasImage
+                    ? (char.image_url.startsWith('http') ? char.image_url : API_ORIGIN + char.image_url)
+                    : '';
+                const avatarHtml = hasImage
+                    ? `<img class="char-card-avatar" src="${avatarSrc}" alt="${char.name}">`
+                    : `<div class="char-card-avatar placeholder">${char.name.charAt(0)}</div>`;
+                return `
+                <div class="char-card ${char.is_playable ? '' : 'not-playable'}"
+                     onclick="${char.is_playable ? `selectChar('${char.id}')` : ''}"
+                     data-char-id="${char.id}">
+                    ${avatarHtml}
+                    <div class="char-card-name">${char.name}</div>
+                    <div class="char-card-personality">${char.personality || ''}</div>
+                    ${char.is_playable ? '<span class="char-card-badge">可扮演</span>' : '<span class="char-card-badge char-card-npc">NPC</span>'}
+                </div>
+                `;
+            }).join('');
+        }
+
+        function selectChar(charId) {
+            game.selectedCharId = charId;
+            document.querySelectorAll('.char-card').forEach(card => {
+                card.classList.toggle('selected', card.dataset.charId === charId);
+            });
+            document.getElementById('playBtn').disabled = false;
+        }
+
+        function goBackUpload() {
+            if (confirm('确定要重新上传吗？')) location.reload();
+        }
+
+        function hideAllScreens() {
+            document.getElementById('homeScreen').style.display = 'none';
+            document.getElementById('uploadScreen').style.display = 'none';
+            document.getElementById('charSelectScreen').classList.remove('active');
+            document.getElementById('gameScreen').classList.remove('active');
+            hideLoading();
+        }
+
+        function goBackSelect() {
+            if (confirm('确定要返回选角页面吗？当前进度将不会保存。')) {
+                document.getElementById('gameScreen').classList.remove('active');
+                document.getElementById('charSelectScreen').classList.add('active');
+            }
+        }
+
+        // ===== 开始游戏（检查缓存/生成场景）=====
+        async function startPlay() {
+            if (!game.selectedCharId) return;
+            if (!currentUser) { goToLogin(); return; }
+
+            const chapter = game.novel.chapters[selectedChapterIndex];
+            const runs = chapter.generated_runs || [];
+            // 查找相同角色的已有记录
+            const cachedRuns = runs.filter(r => r.character_id === game.selectedCharId);
+
+            if (cachedRuns.length > 0) {
+                // 有缓存，弹窗提示
+                const latest = cachedRuns[cachedRuns.length - 1];
+                showCacheModal(latest, cachedRuns.length);
+                return;
+            }
+
+            // 无缓存，直接生成
+            await doGenerate();
+        }
+
+        // 使用已有缓存
+        async function useCachedRun(runId) {
+            closeCacheModal();
+            showLoading('加载已有剧情...');
+            try {
+                const res = await fetch(`${API_BASE}/generated-run/${runId}`);
+                if (!res.ok) throw new Error('加载缓存失败');
+                const data = await res.json();
+
+                const generated = {
+                    scenes: data.scenes,
+                    choices: data.choices,
+                    player_character_name: data.player_char_name,
+                    player_character_id: data.character_id,
+                };
+                game.novel.chapters[selectedChapterIndex].generated_scenes = generated;
+                game.novel.chapters[selectedChapterIndex].player_character_id = game.selectedCharId;
+                initGame();
+            } catch (err) {
+                document.getElementById('errorMsg').textContent = '加载失败: ' + err.message;
+                hideLoading();
+            }
+        }
+
+        // 重新生成
+        async function doGenerate() {
+            showLoading(`正在以${getSelectedCharName()}视角生成场景...`);
+            try {
+                const response = await fetch(
+                    `${API_BASE}/generate/${game.novelId}/${selectedChapterIndex}/${game.selectedCharId}`,
+                    { method: 'POST', credentials: 'include' }
+                );
+                if (!response.ok) {
+                    const errData = await response.json().catch(() => null);
+                    if (errData && errData.detail === '请先登录') {
+                        hideLoading();
+                        goToLogin();
+                        return;
+                    }
+                    const text = await response.text();
+                    throw new Error('发起生成任务失败: ' + response.status + ' ' + text);
+                }
+
+                const text = await response.text();
+                const taskInfo = JSON.parse(text);
+                updateLoading('AI生成中... task_id=' + taskInfo.task_id);
+
+                try {
+                    const result = await pollTaskStatus(taskInfo.task_id);
+                    if (!result.result) throw new Error('生成结果为空');
+
+                    const generated = result.result;
+                    game.novel.chapters[selectedChapterIndex].generated_scenes = generated;
+                    game.novel.chapters[selectedChapterIndex].player_character_id = game.selectedCharId;
+                    initGame();
+                } catch (err) {
+                    console.error('Poll or init error:', err);
+                    document.getElementById('errorMsg').textContent = '生成失败: ' + err.message;
+                    hideLoading();
+                }
+            } catch (err) {
+                console.error(err);
+                document.getElementById('errorMsg').textContent = '生成失败: ' + err.message;
+                hideLoading();
+            }
+        }
+
+        function getSelectedCharName() {
+            const chapter = game.novel.chapters[selectedChapterIndex];
+            const char = chapter.characters.find(c => c.id === game.selectedCharId);
+            return char ? char.name : '未知';
+        }
+
+        // ===== 游戏初始化 =====
+        function initGame() {
+            console.log('initGame called');
+            const chapter = game.novel.chapters[selectedChapterIndex];
+            const generated = chapter.generated_scenes;
+
+            console.log('generated:', generated);
+            console.log('generated.scenes:', generated?.scenes);
+            console.log('scenes count:', generated?.scenes?.length);
+
+            if (!generated || !generated.scenes || generated.scenes.length === 0) {
+                alert('生成场景为空，请重试');
+                hideLoading();
+                return;
+            }
+
+            game.scenes = generated.scenes || [];
+            game.choices = generated.choices || [];
+            game.characters = chapter.characters || [];
+            game.playerCharName = generated.player_character_name || getSelectedCharName();
+
+            console.log('game.scenes:', game.scenes.length);
+            console.log('game.playerCharName:', game.playerCharName);
+
+            game.currentScene = 0;
+            game.currentDialogue = 0;
+            game.doneDialogues = 0;
+            game.flags = {};
+            game.route = null;
+
+            game.totalDialogues = game.scenes.reduce((sum, s) => sum + (s.dialogues?.length || 0), 0);
+            console.log('totalDialogues:', game.totalDialogues);
+            game.backgroundCache = {}; // 地点背景图缓存
+
+            document.getElementById('chapterTitle').textContent = chapter.title;
+            document.getElementById('charSelectScreen').classList.remove('active');
+            document.getElementById('gameScreen').classList.add('active');
+            document.getElementById('chapterEnd').classList.remove('active');
+
+            hideLoading();
+            renderCharacters();
+            showCurrentDialogue();
+        }
+
+        function renderCharacters() {
+            const layer = document.getElementById('characterLayer');
+            layer.innerHTML = '';
+            const scene = game.scenes[game.currentScene];
+            const sceneChars = scene?.characters || [];
+
+            for (const charName of sceneChars) {
+                const char = game.characters.find(c => c.name === charName);
+                if (!char) continue;
+                const isPlayer = charName === game.playerCharName;
+                const div = document.createElement('div');
+                div.className = 'character';
+                div.id = `char-${char.id || charName}`;
+                const hasImg = char.image_url;
+                const imgSrc = hasImg
+                    ? (char.image_url.startsWith('http') ? char.image_url : API_ORIGIN + char.image_url)
+                    : '';
+                const personalityText = char.personality?.substring(0, 20) || '';
+                div.innerHTML = `
+                    ${hasImg ? `<img src="${imgSrc}" alt="${char.name}" class="character-sprite">` : `<div style="font-size:24px;color:#666;">${char.name.charAt(0)}</div>`}
+                    <div class="character-name-badge">${char.name}${isPlayer ? ' (玩家)' : ''}</div>
+                    ${personalityText ? `<div class="char-bottom-info">${personalityText}</div>` : ''}
+                `;
+                layer.appendChild(div);
+            }
+        }
+
+        function updateLocationBackground(location) {
+            const bgEl = document.getElementById('background');
+            const novelId = game.novelId;
+            if (!novelId) return;
+
+            // 如果该地点已经有背景图，直接使用
+            if (game.backgroundCache[location]?.url) {
+                bgEl.style.backgroundImage = `url(${game.backgroundCache[location].url})`;
+                bgEl.classList.remove('default');
+                return;
+            }
+
+            // 如果该地点已经在请求中，跳过
+            if (game.backgroundCache[location]?.loading) return;
+
+            // 先显示默认渐变
+            bgEl.style.backgroundImage = '';
+            bgEl.classList.add('default');
+
+            // 异步请求新地点背景图
+            game.backgroundCache[location] = { loading: true };
+            (async () => {
+                try {
+                    const res = await fetch(`${API_BASE}/image/location/${encodeURIComponent(novelId)}/${encodeURIComponent(location)}`, { credentials: 'include' });
+                    if (!res.ok) throw new Error('背景生成失败');
+                    const data = await res.json();
+                    if (data.url) {
+                        game.backgroundCache[location] = { url: data.url };
+                        // 只有当当前地点匹配时才更新
+                        if (location === (game.scenes?.[game.currentScene]?.location || '')) {
+                            bgEl.style.backgroundImage = `url(${data.url})`;
+                            bgEl.classList.remove('default');
+                        }
+                    }
+                } catch (e) {
+                    console.warn('地点背景图生成失败:', e);
+                }
+            })();
+        }
+
+        function showCurrentDialogue() {
+            const scene = game.scenes[game.currentScene];
+            if (!scene) { showChapterEnd(); return; }
+
+            const dialogues = scene.dialogues || [];
+            if (game.currentDialogue >= dialogues.length) {
+                const choice = game.choices.find(c => c.at_scene === game.currentScene);
+                if (choice) { showChoices(choice); }
+                else { transitionToNextScene(); }
+                return;
+            }
+
+            const dialogue = dialogues[game.currentDialogue];
+
+            const speakerEl = document.getElementById('speakerName');
+            const contentEl = document.getElementById('dialogueContent');
+
+            speakerEl.textContent = dialogue.speaker;
+            speakerEl.className = 'speaker-name' + (dialogue.speaker !== '旁白' && dialogue.speaker !== game.playerCharName ? ' npc' : '');
+            contentEl.textContent = dialogue.content;
+            const loc = scene.location || scene.title;
+            document.getElementById('sceneTitle').textContent = loc;
+
+            // 切换地点背景图
+            updateLocationBackground(loc);
+
+            // 高亮NPC
+            document.querySelectorAll('.character').forEach(el => el.classList.remove('speaking', 'npc-highlight'));
+            if (dialogue.speaker !== '旁白' && dialogue.speaker !== game.playerCharName) {
+                const char = game.characters.find(c => c.name === dialogue.speaker);
+                if (char) {
+                    const charEl = document.getElementById(`char-${char.id || char.name}`);
+                    if (charEl) { charEl.classList.add('npc-highlight'); }
+                }
+            } else if (dialogue.speaker === game.playerCharName) {
+                const char = game.characters.find(c => c.name === dialogue.speaker);
+                if (char) {
+                    const charEl = document.getElementById(`char-${char.id || char.name}`);
+                    if (charEl) { charEl.classList.add('speaking'); }
+                }
+            }
+
+            game.doneDialogues++;
+            updateProgress();
+
+            game.isWaiting = true;
+            document.getElementById('continueHint').style.display = 'block';
+            document.getElementById('choicePanel').classList.remove('active');
+        }
+
+        function updateProgress() {
+            const percent = game.totalDialogues > 0 ? Math.round((game.doneDialogues / game.totalDialogues) * 100) : 0;
+            document.getElementById('progressFill').style.width = `${percent}%`;
+        }
+
+        function transitionToNextScene() {
+            const transition = document.getElementById('sceneTransition');
+            transition.classList.add('active');
+
+            setTimeout(() => {
+                game.currentScene++;
+                game.currentDialogue = 0;
+
+                if (game.currentScene >= game.scenes.length) {
+                    transition.classList.remove('active');
+                    showChapterEnd();
+                    return;
+                }
+
+                const nextScene = game.scenes[game.currentScene];
+                document.getElementById('sceneTitle').textContent = nextScene.location || nextScene.title;
+
+                renderCharacters();
+                showCurrentDialogue();
+
+                setTimeout(() => transition.classList.remove('active'), 300);
+            }, 500);
+        }
+
+        function showChoices(choice) {
+            game.isWaiting = false;
+            document.getElementById('continueHint').style.display = 'none';
+
+            const panel = document.getElementById('choicePanel');
+            document.getElementById('choicePrompt').textContent = choice.prompt || '请做出选择';
+
+            document.getElementById('choiceList').innerHTML = choice.options.map((opt, i) => `
+                <button class="choice-btn" onclick="makeChoice(${i})">
+                    ${opt.text}
+                    ${opt.effect ? `<div class="choice-effect">${formatEffect(opt.effect)}</div>` : ''}
+                </button>
+            `).join('');
+
+            panel.classList.add('active');
+        }
+
+        function formatEffect(effect) {
+            const labels = {
+                confidence: '信心+', courage: '勇气+', trust: '信任+', friendship: '友情+',
+                wisdom: '智慧+', strength: '力量+', impressed: '印象深刻+', amused: '有趣+',
+                relieved: '松口气+', risk: '风险+', delegation: '授权+', protection: '保护+'
+            };
+            return Object.entries(effect).map(([k, v]) => labels[k] || `${k}: ${v}`).join(', ');
+        }
+
+        function makeChoice(index) {
+            const choice = game.choices.find(c => c.at_scene === game.currentScene);
+            const option = choice.options[index];
+
+            if (option.effect) game.flags = { ...game.flags, ...option.effect };
+            if (option.route) game.route = option.route;
+
+            document.getElementById('choicePanel').classList.remove('active');
+            if (option.next_scene !== undefined) {
+                game.currentScene = option.next_scene;
+                game.currentDialogue = 0;
+                renderCharacters();
+            }
+            game.isWaiting = true;
+            showCurrentDialogue();
+        }
+
+        function showChapterEnd() {
+            const chapter = game.novel.chapters[selectedChapterIndex];
+            document.getElementById('endTitle').textContent = chapter.title + ' 完';
+
+            const flagLabels = {
+                // 路线标签
+                teamwork: '团队', independent: '独立', trust: '信任', brave: '勇敢', cautious: '谨慎',
+                enlightenment: '觉醒', cooperative: '协作', aggressive: '激进', wise: '智慧',
+                romance: '爱情', combat: '战斗', escape: '逃跑', betrayal: '背叛',
+                // 效果标签
+                confidence: '信心+', courage: '勇气+', trust: '信任+', friendship: '友情+',
+                wisdom: '智慧+', strength: '力量+', speed: '速度+',
+                risk: '风险', delegation: '授权', protection: '保护',
+                impressed: '印象深刻', amused: '觉得有趣', relieved: '松了口气',
+                disappointed: '失望', angry: '生气', sad: '悲伤',
+                // 通用
+                none: '无'
+            };
+            const routeCN = game.route ? (flagLabels[game.route] || game.route) : '无';
+            const activeFlags = Object.entries(game.flags).filter(([k, v]) => v === true || typeof v === 'number').map(([k]) => `<span>${flagLabels[k] || k}</span>`).join(', ');
+
+            document.getElementById('endStats').innerHTML = `当前路线: <span>${routeCN}</span><br>获得标签: ${activeFlags || '无'}`;
+
+            const nextBtn = document.getElementById('nextChapterBtn');
+            nextBtn.style.display = selectedChapterIndex < game.novel.chapters.length - 1 ? 'inline-block' : 'none';
+
+            document.getElementById('chapterEnd').classList.add('active');
+        }
+
+        function replayChapter() {
+            document.getElementById('chapterEnd').classList.remove('active');
+            game.selectedCharId = null;
+            document.getElementById('gameScreen').classList.remove('active');
+            document.getElementById('charSelectScreen').classList.add('active');
+            renderCharGrid();
+            document.getElementById('playBtn').disabled = true;
+        }
+
+        function nextChapter() {
+            document.getElementById('chapterEnd').classList.remove('active');
+
+            if (selectedChapterIndex < game.novel.chapters.length - 1) {
+                selectChapterTab(selectedChapterIndex + 1);
+                game.selectedCharId = null;
+                document.getElementById('gameScreen').classList.remove('active');
+                document.getElementById('charSelectScreen').classList.add('active');
+                renderCharGrid();
+                document.getElementById('playBtn').disabled = true;
+            } else {
+                alert('恭喜你完成了整个故事！');
+                location.reload();
+            }
+        }
+
+        document.getElementById('dialogueBox').addEventListener('click', () => {
+            if (!game.isWaiting) return;
+            game.isWaiting = false;
+            document.getElementById('continueHint').style.display = 'none';
+            game.currentDialogue++;
+            showCurrentDialogue();
+        });
+
+        // ===== 路线图 =====
+        let routeMapState = {
+            panX: 0,
+            panY: 0,
+            scale: 1,
+            isDragging: false,
+            lastX: 0,
+            lastY: 0,
+            svgWidth: 0,
+            svgHeight: 0,
+            contentWidth: 0,
+            contentHeight: 0
+        };
+
+        function showRouteMap() {
+            document.getElementById('routeMapTitle').textContent = game.novel.chapters[selectedChapterIndex].title + ' - 路线图';
+            const body = document.getElementById('routeMapBody');
+            body.innerHTML = buildFlowchart();
+            document.getElementById('routeMapModal').classList.add('active');
+
+            // 初始化拖拽
+            setTimeout(initRouteMapDrag, 50);
+        }
+
+        function closeRouteMap() {
+            document.getElementById('routeMapModal').classList.remove('active');
+        }
+
+        // ===== 缓存剧情确认模态框 =====
+        function showCacheModal(latestRun, totalCount) {
+            const body = document.getElementById('cacheModalBody');
+            const actions = document.getElementById('cacheModalActions');
+            const charName = latestRun.player_char_name;
+            const time = latestRun.created_at || '未知时间';
+            body.innerHTML = `
+                <div style="margin-bottom:16px;">
+                    <strong style="color:#e94560;font-size:16px;">${charName}</strong> 的剧情已有 <strong style="color:#ffd700;">${totalCount}</strong> 条记录<br>
+                    <span style="color:#666;font-size:13px;">最近一次生成时间：${time}</span><br>
+                    <span style="color:#666;font-size:13px;">（共 ${totalCount} 次生成，选择"查看详情"可列出全部时间）</span>
+                </div>
+            `;
+            actions.innerHTML = `
+                <button class="btn btn-primary" onclick="useCachedRun('${latestRun.run_id}')">使用最近一次</button>
+                <button class="btn btn-secondary" onclick="showAllCacheVersions()">查看历史记录</button>
+                <button class="btn btn-secondary" onclick="closeCacheModal(); doGenerate();">重新生成</button>
+            `;
+            document.getElementById('cacheModal').classList.add('active');
+        }
+
+        function showAllCacheVersions() {
+            const chapter = game.novel.chapters[selectedChapterIndex];
+            const runs = (chapter.generated_runs || []).filter(r => r.character_id === game.selectedCharId);
+            const charName = getSelectedCharName();
+            const body = document.getElementById('cacheModalBody');
+            const actions = document.getElementById('cacheModalActions');
+            body.innerHTML = `
+                <div style="margin-bottom:16px;"><strong style="color:#e94560;">${charName}</strong> 的剧情记录：</div>
+                <div style="text-align:left;">
+                    ${runs.map(r => `<div style="padding:8px 0;border-bottom:1px solid #1a3055;display:flex;justify-content:space-between;align-items:center;">
+                        <span style="color:#aaa;font-size:13px;">${r.created_at}</span>
+                        <button onclick="useCachedRun('${r.run_id}'); closeCacheModal();" style="background:#e94560;color:#fff;border:none;padding:4px 12px;border-radius:6px;font-size:12px;cursor:pointer;">使用此条</button>
+                    </div>`).join('')}
+                </div>
+            `;
+            actions.innerHTML = `
+                <button class="btn btn-secondary" onclick="goBackCacheMain()">返回</button>
+                <button class="btn btn-secondary" onclick="closeCacheModal(); doGenerate();">重新生成</button>
+            `;
+        }
+
+        function goBackCacheMain() {
+            const chapter = game.novel.chapters[selectedChapterIndex];
+            const runs = chapter.generated_runs || [];
+            const cachedRuns = runs.filter(r => r.character_id === game.selectedCharId);
+            if (cachedRuns.length > 0) {
+                showCacheModal(cachedRuns[cachedRuns.length - 1], cachedRuns.length);
+            } else {
+                closeCacheModal();
+                doGenerate();
+            }
+        }
+
+        function closeCacheModal() {
+            document.getElementById('cacheModal').classList.remove('active');
+        }
+
+        function initRouteMapDrag() {
+            const body = document.getElementById('routeMapBody');
+            const svg = body.querySelector('svg');
+            if (!svg) return;
+
+            // 重置状态
+            routeMapState = {
+                panX: 0,
+                panY: 0,
+                scale: 1,
+                isDragging: false,
+                lastX: 0,
+                lastY: 0,
+                svgWidth: body.clientWidth,
+                svgHeight: body.clientHeight,
+                contentWidth: parseFloat(svg.getAttribute('width') || 800),
+                contentHeight: parseFloat(svg.getAttribute('height') || 600)
+            };
+
+            // 初始居中
+            centerRouteMap();
+
+            // 鼠标事件
+            body.addEventListener('mousedown', onRouteMapMouseDown);
+            body.addEventListener('mousemove', onRouteMapMouseMove);
+            body.addEventListener('mouseup', onRouteMapMouseUp);
+            body.addEventListener('mouseleave', onRouteMapMouseUp);
+            body.addEventListener('wheel', onRouteMapWheel);
+        }
+
+        function centerRouteMap() {
+            const body = document.getElementById('routeMapBody');
+            const svg = body.querySelector('svg');
+            if (!svg) return;
+
+            const scaleX = routeMapState.svgWidth / routeMapState.contentWidth;
+            const scaleY = routeMapState.svgHeight / routeMapState.contentHeight;
+            routeMapState.scale = Math.min(scaleX, scaleY, 1) * 0.9;
+
+            routeMapState.panX = (routeMapState.svgWidth - routeMapState.contentWidth * routeMapState.scale) / 2;
+            routeMapState.panY = (routeMapState.svgHeight - routeMapState.contentHeight * routeMapState.scale) / 2;
+
+            updateRouteMapTransform();
+        }
+
+        function onRouteMapMouseDown(e) {
+            routeMapState.isDragging = true;
+            routeMapState.lastX = e.clientX;
+            routeMapState.lastY = e.clientY;
+        }
+
+        function onRouteMapMouseMove(e) {
+            if (!routeMapState.isDragging) return;
+
+            const dx = e.clientX - routeMapState.lastX;
+            const dy = e.clientY - routeMapState.lastY;
+
+            routeMapState.panX += dx;
+            routeMapState.panY += dy;
+            routeMapState.lastX = e.clientX;
+            routeMapState.lastY = e.clientY;
+
+            updateRouteMapTransform();
+        }
+
+        function onRouteMapMouseUp() {
+            routeMapState.isDragging = false;
+        }
+
+        function onRouteMapWheel(e) {
+            e.preventDefault();
+            const delta = e.deltaY > 0 ? 0.9 : 1.1;
+            const newScale = Math.max(0.2, Math.min(3, routeMapState.scale * delta));
+
+            // 以鼠标位置为中心缩放
+            const rect = e.currentTarget.getBoundingClientRect();
+            const mouseX = e.clientX - rect.left;
+            const mouseY = e.clientY - rect.top;
+
+            routeMapState.panX = mouseX - (mouseX - routeMapState.panX) * (newScale / routeMapState.scale);
+            routeMapState.panY = mouseY - (mouseY - routeMapState.panY) * (newScale / routeMapState.scale);
+            routeMapState.scale = newScale;
+
+            updateRouteMapTransform();
+        }
+
+        function updateRouteMapTransform() {
+            const body = document.getElementById('routeMapBody');
+            const svg = body.querySelector('svg');
+            if (!svg) return;
+
+            svg.style.transformOrigin = '0 0';
+            svg.style.transform = `translate(${routeMapState.panX}px, ${routeMapState.panY}px) scale(${routeMapState.scale})`;
+        }
+
+        function buildFlowchart() {
+            const scenes = game.scenes;
+            const choices = game.choices;
+            if (!scenes.length) return '<p style="color:#888;text-align:center;padding:40px;">暂无路线数据</p>';
+
+            const choiceMap = {};
+            choices.forEach(c => { choiceMap[c.at_scene] = c; });
+
+            const nodeWidth = 200;
+            const nodeHeight = 75;
+            const hGap = 60;
+            const vGap = 130;
+            const padding = 80;
+
+            // ===== DAG层次化布局 =====
+
+            // 1. 构建图结构
+            const nodeData = {};  // sceneIndex -> { scene, choice, parents: Set, children: Set }
+            for (let i = 0; i < scenes.length; i++) {
+                nodeData[i] = { sceneIndex: i, scene: scenes[i], choice: choiceMap[i], parents: new Set(), children: new Set(), inDegree: 0 };
+            }
+
+            // 填充边
+            for (let i = 0; i < scenes.length; i++) {
+                const choice = choiceMap[i];
+                if (choice && choice.options) {
+                    choice.options.forEach(opt => {
+                        const nextIdx = (opt.next_scene !== undefined && opt.next_scene < scenes.length) ? opt.next_scene : i + 1;
+                        if (nextIdx < scenes.length) {
+                            nodeData[i].children.add(nextIdx);
+                            nodeData[nextIdx].parents.add(i);
+                        }
+                    });
+                } else if (i < scenes.length - 1) {
+                    nodeData[i].children.add(i + 1);
+                    nodeData[i + 1].parents.add(i);
+                }
+            }
+
+            // 2. BFS计算拓扑层级
+            const levels = {};  // level -> [sceneIndex, ...]
+            const nodeLevel = {};  // sceneIndex -> level
+
+            function bfs() {
+                const visited = new Set();
+                let queue = [0];
+                visited.add(0);
+                nodeLevel[0] = 0;
+                let currentLevel = 0;
+
+                while (queue.length > 0) {
+                    const nextQueue = [];
+                    levels[currentLevel] = levels[currentLevel] || [];
+
+                    for (const idx of queue) {
+                        levels[currentLevel].push(idx);
+
+                        for (const child of nodeData[idx].children) {
+                            if (!visited.has(child)) {
+                                visited.add(child);
+                                nodeLevel[child] = currentLevel + 1;
+                                nextQueue.push(child);
+                            } else {
+                                // 已访问 = 汇合节点，可能需要提升到更高层级
+                                if ((nodeLevel[child] || 0) <= currentLevel) {
+                                    // 确保汇合节点在父节点下方
+                                    nodeLevel[child] = currentLevel + 1;
+                                }
+                            }
+                        }
+                    }
+
+                    // 重新按层级整理
+                    queue = [...new Set(nextQueue)];
+                    currentLevel++;
+                }
+            }
+
+            bfs();
+
+            // 将节点按层级重新组织
+            const levelGroups = {};
+            for (const [sceneIdxStr, level] of Object.entries(nodeLevel)) {
+                const idx = parseInt(sceneIdxStr);
+                if (!levelGroups[level]) levelGroups[level] = [];
+                levelGroups[level].push(idx);
+            }
+
+            // 3. 层级内分配X坐标（避免重叠）
+            const positions = {};  // sceneIndex -> { x, y }
+            const levelKeys = Object.keys(levelGroups).map(Number).sort((a, b) => a - b);
+
+            // 第一层：居中
+            for (const level of levelKeys) {
+                const nodes = levelGroups[level];
+                const totalWidth = nodes.length * nodeWidth + (nodes.length - 1) * hGap;
+                let startX = -totalWidth / 2 + nodeWidth / 2;
+
+                // 对于每个节点，如果有父节点则尝试居中于父节点X范围
+                for (let i = 0; i < nodes.length; i++) {
+                    const idx = nodes[i];
+                    const parents = [...nodeData[idx].parents];
+                    const parentPositions = parents.map(p => positions[p]?.x).filter(x => x !== undefined);
+
+                    let targetX;
+                    if (parentPositions.length > 0) {
+                        const minPX = Math.min(...parentPositions);
+                        const maxPX = Math.max(...parentPositions);
+                        targetX = (minPX + maxPX) / 2;
+                    } else {
+                        targetX = startX + i * (nodeWidth + hGap);
+                    }
+
+                    positions[idx] = {
+                        x: targetX,
+                        y: level * (nodeHeight + vGap),
+                        level: level,
+                        sceneIndex: idx
+                    };
+                }
+
+                // 按X排序后调整，确保节点不重叠
+                nodes.sort((a, b) => positions[a].x - positions[b].x);
+                for (let i = 0; i < nodes.length; i++) {
+                    const idx = nodes[i];
+                    const minY = positions[idx].x - (i * (nodeWidth + hGap));
+                    if (i > 0) {
+                        const prevX = positions[nodes[i - 1]].x;
+                        positions[idx].x = Math.max(positions[idx].x, prevX + nodeWidth + hGap);
+                    }
+                }
+            }
+
+            // 4. 计算内容边界
+            let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+            for (const pos of Object.values(positions)) {
+                minX = Math.min(minX, pos.x - nodeWidth / 2);
+                maxX = Math.max(maxX, pos.x + nodeWidth / 2);
+                minY = Math.min(minY, pos.y);
+                maxY = Math.max(maxY, pos.y + nodeHeight);
+            }
+
+            const contentWidth = maxX - minX + padding * 2;
+            const contentHeight = maxY - minY + padding * 2;
+            const offsetX = padding - minX;
+            const offsetY = padding - minY;
+
+            // 应用偏移
+            for (const pos of Object.values(positions)) {
+                pos.x += offsetX;
+                pos.y += offsetY;
+            }
+
+            // 构建节点对象列表
+            const nodes = [];
+            for (const idx of Object.keys(positions).map(Number)) {
+                const pos = positions[idx];
+                nodes.push({
+                    ...pos,
+                    width: nodeWidth,
+                    height: nodeHeight,
+                    isChoice: !!nodeData[idx].choice,
+                    isEnd: idx === scenes.length - 1 && !nodeData[idx].choice,
+                    choice: nodeData[idx].choice
+                });
+            }
+
+            // 构建父子关系到节点对象
+            const nodeMap = {};
+            nodes.forEach(n => { nodeMap[n.sceneIndex] = n; n.children = []; });
+            for (let i = 0; i < scenes.length; i++) {
+                const parent = nodeMap[i];
+                if (!parent) continue;
+                for (const childIdx of nodeData[i].children) {
+                    const child = nodeMap[childIdx];
+                    if (child) parent.children.push(child);
+                }
+            }
+
+            // ===== 生成SVG =====
+            const currentSceneIdx = game.currentScene;
+            let svg = `<svg width="${contentWidth}" height="${contentHeight}" xmlns="http://www.w3.org/2000/svg" style="transition: transform 0.05s ease-out;">`;
+
+            svg += `<defs>
+                <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+                    <polygon points="0 0, 10 3.5, 0 7" fill="#666"/>
+                </marker>
+                <marker id="arrowheadCurrent" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+                    <polygon points="0 0, 10 3.5, 0 7" fill="#e94560"/>
+                </marker>
+                <linearGradient id="currentGradient" x1="0%" y1="0%" x2="0%" y2="100%">
+                    <stop offset="0%" style="stop-color:#e94560;stop-opacity:1" />
+                    <stop offset="100%" style="stop-color:#c73e54;stop-opacity:1" />
+                </linearGradient>
+                <filter id="glow">
+                    <feGaussianBlur stdDeviation="3" result="coloredBlur"/>
+                    <feMerge>
+                        <feMergeNode in="coloredBlur"/>
+                        <feMergeNode in="SourceGraphic"/>
+                    </feMerge>
+                </filter>
+                <pattern id="gridPattern" width="40" height="40" patternUnits="userSpaceOnUse">
+                    <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#111" stroke-width="1"/>
+                </pattern>
+            </defs>`;
+
+            // 网格背景
+            svg += `<rect x="0" y="0" width="${contentWidth}" height="${contentHeight}" fill="#0a0a1a"/>`;
+            svg += `<rect x="0" y="0" width="${contentWidth}" height="${contentHeight}" fill="url(#gridPattern)"/>`;
+
+            // 连线
+            nodes.forEach(node => {
+                node.children.forEach((child, i) => {
+                    const x1 = node.x;
+                    const y1 = node.y + node.height;
+                    const x2 = child.x;
+                    const y2 = child.y;
+                    const midY = (y1 + y2) / 2;
+
+                    const isCurrent = node.sceneIndex === currentSceneIdx || child.sceneIndex === currentSceneIdx;
+                    svg += `<path d="M${x1},${y1} C${x1},${midY} ${x2},${midY} ${x2},${y2}"
+                            stroke="${isCurrent ? '#e94560' : '#555'}" stroke-width="${isCurrent ? 3 : 2}" fill="none"
+                            marker-end="url(#${isCurrent ? 'arrowheadCurrent' : 'arrowhead'})"/>`;
+
+                    if (node.isChoice && node.choice && node.choice.options[i]) {
+                        const opt = node.choice.options[i];
+                        const label = formatRouteLabel(opt.route) || (i === 0 ? '选项A' : i === 1 ? '选项B' : `选项${String.fromCharCode(65+i)}`);
+                        const labelX = (node.x + child.x) / 2;
+                        const labelY = midY - 8;
+                        const labelWidth = Math.max(60, label.length * 12 + 20);
+                        svg += `<rect x="${labelX - labelWidth/2}" y="${labelY - 14}" width="${labelWidth}" height="28" rx="14" fill="#e94560" stroke="#ff6b6b" stroke-width="1"/>`;
+                        svg += `<text x="${labelX}" y="${labelY + 5}" text-anchor="middle" fill="white" font-size="11" font-weight="bold">${label}</text>`;
+                    }
+                });
+            });
+
+            // 节点
+            nodes.forEach(node => {
+                const x = node.x - node.width / 2;
+                const y = node.y;
+                const isCurrent = node.sceneIndex === currentSceneIdx;
+
+                let fillColor = '#0f3460';
+                let borderColor = '#3a3a5a';
+                let shadowFilter = '';
+                if (isCurrent) {
+                    fillColor = 'url(#currentGradient)';
+                    borderColor = '#ff6b6b';
+                    shadowFilter = ' filter="url(#glow)"';
+                }
+                if (node.isChoice) borderColor = '#e94560';
+                if (node.isEnd) { fillColor = '#0a3a0a'; borderColor = '#50c878'; }
+
+                svg += `<rect x="${x}" y="${y}" width="${node.width}" height="${node.height}"
+                        rx="10" fill="${fillColor}" stroke="${borderColor}" stroke-width="${isCurrent ? 3 : 2}"${shadowFilter}/>`;
+
+                const title = node.scene.location || node.scene.title || `场景${node.sceneIndex}`;
+                const titleText = title.length > 16 ? title.substring(0, 16) + '...' : title;
+                svg += `<text x="${node.x}" y="${y + 28}" text-anchor="middle" fill="white" font-size="13" font-weight="bold">${titleText}</text>`;
+
+                const desc = node.scene.description || '';
+                const descText = desc.length > 22 ? desc.substring(0, 22) + '...' : desc;
+                if (descText) {
+                    svg += `<text x="${node.x}" y="${y + 50}" text-anchor="middle" fill="#aaa" font-size="10">${descText}</text>`;
+                }
+
+                svg += `<text x="${x + 14}" y="${y + 20}" text-anchor="start" fill="${isCurrent ? '#fff' : '#666'}" font-size="11" font-weight="bold">#${node.sceneIndex}</text>`;
+
+                if (node.isChoice) {
+                    svg += `<text x="${x + node.width - 16}" y="${y + 22}" text-anchor="middle" fill="#e94560" font-size="14">◆</text>`;
+                }
+                if (node.isEnd) {
+                    svg += `<text x="${x + node.width - 16}" y="${y + 22}" text-anchor="middle" fill="#50c878" font-size="14">★</text>`;
+                }
+                if (isCurrent) {
+                    svg += `<text x="${x + node.width - 16}" y="${y + 22}" text-anchor="middle" fill="#ffd700" font-size="14">●</text>`;
+                }
+            });
+
+            // 图例
+            const legendX = 20;
+            const legendY = 20;
+            svg += `<rect x="${legendX}" y="${legendY}" width="145" height="125" rx="10" fill="rgba(15,52,96,0.9)" stroke="#333" stroke-width="1"/>`;
+            svg += `<text x="${legendX + 72}" y="${legendY + 22}" text-anchor="middle" fill="#fff" font-size="12" font-weight="bold">图例</text>`;
+            svg += `<circle cx="${legendX + 22}" cy="${legendY + 45}" r="5" fill="#e94560"/>`;
+            svg += `<text x="${legendX + 34}" y="${legendY + 49}" fill="#aaa" font-size="11">当前位置</text>`;
+            svg += `<text x="${legendX + 22}" y="${legendY + 75}" fill="#e94560" font-size="13">◆</text>`;
+            svg += `<text x="${legendX + 34}" y="${legendY + 79}" fill="#aaa" font-size="11">选择分支</text>`;
+            svg += `<text x="${legendX + 22}" y="${legendY + 105}" fill="#50c878" font-size="14">★</text>`;
+            svg += `<text x="${legendX + 34}" y="${legendY + 109}" fill="#aaa" font-size="11">终点</text>`;
+
+            // 操作提示
+            svg += `<text x="${contentWidth - 20}" y="${contentHeight - 15}" text-anchor="end" fill="#555" font-size="11">拖拽平移 · 滚轮缩放</text>`;
+
+            svg += '</svg>';
+            return svg;
+        }
+
+        function formatRouteLabel(route) {
+            if (!route) return '';
+            const labels = {
+                teamwork: '团队', independent: '独立', trust: '信任', brave: '勇敢', cautious: '谨慎',
+                enlightenment: '觉醒', cooperative: '协作', aggressive: '激进', wise: '智慧',
+                romance: '爱情', combat: '战斗', escape: '逃跑'
+            };
+            return labels[route] || route;
+        }
+
+        function showLoading(text) {
+            document.getElementById('uploadScreen').style.display = 'none';
+            document.getElementById('charSelectScreen').classList.remove('active');
+            document.getElementById('loadingScreen').classList.add('active');
+            document.getElementById('loadingText').textContent = text;
+            document.getElementById('loadingProgress').textContent = '';
+        }
+
+        // 登录跳转检查：检查 URL 上的 ?return= 参数
+        function checkReturnUrl() {
+            const params = new URLSearchParams(window.location.search);
+            const returnUrl = params.get('return');
+            if (returnUrl) {
+                try {
+                    const url = decodeURIComponent(returnUrl);
+                    if (url.includes('index.html') || url.includes(window.location.hostname) || url.startsWith('/')) {
+                        setTimeout(() => {
+                            if (currentUser) {
+                                window.location.href = url;
+                            }
+                        }, 500);
+                    }
+                } catch(e) {}
+            }
+        }
+
+        function updateLoading(text, progress) {
+            document.getElementById('loadingText').textContent = text;
+            const progEl = document.getElementById('loadingProgress');
+            if (progress !== null && progress !== undefined && progress >= 0 && progress <= 1) {
+                const pct = Math.round(progress * 100);
+                progEl.style.width = '200px';
+                progEl.style.background = '#333';
+                progEl.style.borderRadius = '4px';
+                progEl.style.overflow = 'hidden';
+                progEl.style.height = '8px';
+                progEl.style.margin = '0 auto';
+                progEl.innerHTML = `<div style="height:100%;width:${pct}%;background:#e94560;transition:width 0.3s;border-radius:4px;"></div>`;
+                progEl.textContent = `${pct}%`;
+            } else {
+                progEl.textContent = '';
+            }
+        }
+
+        function hideLoading() {
+            document.getElementById('loadingScreen').classList.remove('active');
+        }
+
+        // ===== 页面初始化 =====
+        document.addEventListener('DOMContentLoaded', () => {
+            initAuth();
+            checkReturnUrl();
+
+            // 文件上传事件监听
+            document.getElementById('fileInput').addEventListener('change', (e) => {
+                for (const file of e.target.files) {
+                    if (!uploadedFiles.find(f => f.name === file.name)) uploadedFiles.push(file);
+                }
+                renderFileList();
+            });
+
+            // 拖拽上传支持
+            document.addEventListener('dragover', (e) => e.preventDefault());
+            document.addEventListener('drop', (e) => {
+                if (e.target.closest('.file-label') || e.target.closest('.upload-screen')) {
+                    e.preventDefault();
+                    const files = e.dataTransfer.files;
+                    for (const file of files) {
+                        if (!uploadedFiles.find(f => f.name === file.name)) uploadedFiles.push(file);
+                    }
+                    renderFileList();
+                }
+            });
+        });
+    </script>
+</body>
+</html>

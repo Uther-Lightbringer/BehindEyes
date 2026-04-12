@@ -2,6 +2,9 @@ __pycache__/
 *.pyc
 *.pyo
 .env
-novel-vn/
 *.class
 .pytest_cache/
+data/
+*.db
+*.jpg
+*.png

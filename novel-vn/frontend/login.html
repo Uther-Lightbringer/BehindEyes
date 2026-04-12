@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>登录 / 注册 - 视觉小说播放器</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: "Microsoft YaHei", sans-serif; background: #1a1a2e; color: #eee; min-height: 100vh; display: flex; justify-content: center; align-items: center; }
+
+        .login-container { width: 420px; background: #16213e; border-radius: 16px; overflow: hidden; box-shadow: 0 20px 60px rgba(0,0,0,0.5); }
+        .login-header { text-align: center; padding: 40px 30px 20px; }
+        .login-header h1 { font-size: 26px; color: #e94560; margin-bottom: 8px; }
+        .login-header p { color: #888; font-size: 14px; }
+
+        .tab-bar { display: flex; border-bottom: 1px solid #333; }
+        .tab { flex: 1; padding: 14px; text-align: center; cursor: pointer; font-size: 16px; color: #888; transition: all 0.3s; border-bottom: 2px solid transparent; }
+        .tab.active { color: #e94560; border-bottom-color: #e94560; }
+        .tab:hover { color: #fff; }
+
+        .form-body { padding: 30px; }
+        .form-group { margin-bottom: 20px; }
+        .form-group label { display: block; margin-bottom: 8px; font-size: 14px; color: #aaa; }
+        .form-group input {
+            width: 100%; padding: 12px 15px; border: 2px solid #0f3460; border-radius: 8px;
+            background: #1a1a2e; color: #fff; font-size: 16px; outline: none; transition: border-color 0.3s;
+        }
+        .form-group input:focus { border-color: #e94560; }
+
+        .btn { width: 100%; padding: 14px; border: none; border-radius: 8px; font-size: 18px; cursor: pointer; transition: all 0.3s; margin-top: 10px; }
+        .btn-primary { background: #e94560; color: #fff; }
+        .btn-primary:hover { background: #ff6b6b; }
+        .btn-primary:disabled { background: #555; cursor: not-allowed; }
+        .btn-secondary { background: #0f3460; color: #fff; margin-top: 8px; }
+        .btn-secondary:hover { background: #1a4a80; }
+
+        .error-msg { color: #e94560; font-size: 13px; margin-top: 10px; text-align: center; min-height: 20px; }
+        .footer { text-align: center; padding: 20px; color: #555; font-size: 13px; }
+        .footer a { color: #e94560; text-decoration: none; }
+        .footer a:hover { text-decoration: underline; }
+
+        .guest-hint { text-align: center; margin-top: 15px; font-size: 13px; color: #666; }
+        .guest-hint a { color: #e94560; text-decoration: none; }
+    </style>
+</head>
+<body>
+    <div class="login-container">
+        <div class="login-header">
+            <h1>视觉小说生成器</h1>
+            <p>登录以管理你的小说和角色</p>
+        </div>
+
+        <div class="tab-bar">
+            <div class="tab active" id="loginTab" onclick="switchTab('login')">登录</div>
+            <div class="tab" id="registerTab" onclick="switchTab('register')">注册</div>
+        </div>
+
+        <div class="form-body">
+            <form id="authForm" onsubmit="return false;">
+                <div class="form-group">
+                    <label>用户名</label>
+                    <input type="text" id="username" placeholder="输入用户名" autocomplete="username">
+                </div>
+                <div class="form-group">
+                    <label>密码</label>
+                    <input type="password" id="password" placeholder="输入密码" autocomplete="current-password">
+                </div>
+                <button class="btn btn-primary" id="submitBtn" onclick="handleSubmit()">登录</button>
+            </form>
+            <div class="error-msg" id="errorMsg"></div>
+
+            <button class="btn btn-secondary" id="guestBtn" onclick="goToGuest()">游客访问</button>
+            <div class="guest-hint">暂时以游客身份浏览公开内容</div>
+        </div>
+
+        <div class="footer">
+            <a href="index.html">返回首页</a>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = '/api';
+        let currentMode = 'login';
+
+        async function checkLoggedIn() {
+            try {
+                const res = await fetch(`${API_BASE}/auth/me`, { credentials: 'include' });
+                const data = await res.json();
+                if (data.logged_in) {
+                    window.location.href = 'index.html';
+                    return true;
+                }
+            } catch(e) {}
+            return false;
+        }
+
+        checkLoggedIn();
+
+        function switchTab(mode) {
+            currentMode = mode;
+            document.getElementById('loginTab').classList.toggle('active', mode === 'login');
+            document.getElementById('registerTab').classList.toggle('active', mode === 'register');
+            document.getElementById('submitBtn').textContent = mode === 'login' ? '登录' : '注册';
+            document.getElementById('errorMsg').textContent = '';
+        }
+
+        async function handleSubmit() {
+            const username = document.getElementById('username').value.trim();
+            const password = document.getElementById('password').value;
+            const errorMsg = document.getElementById('errorMsg');
+            const submitBtn = document.getElementById('submitBtn');
+
+            if (!username || !password) {
+                errorMsg.textContent = '请填写完整信息';
+                return;
+            }
+
+            submitBtn.disabled = true;
+            errorMsg.textContent = '处理中...';
+
+            const endpoint = currentMode === 'login' ? '/auth/login' : '/auth/register';
+
+            try {
+                const res = await fetch(`${API_BASE}${endpoint}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include',
+                    body: JSON.stringify({ username, password })
+                });
+
+                const data = await res.json();
+
+                if (res.ok && data.success) {
+                    errorMsg.textContent = `${currentMode === 'login' ? '登录' : '注册'}成功，正在跳转...`;
+                    setTimeout(() => window.location.href = 'index.html', 500);
+                } else {
+                    errorMsg.textContent = data.detail || '操作失败，请重试';
+                }
+            } catch (err) {
+                errorMsg.textContent = '网络错误，请检查后端服务';
+            } finally {
+                submitBtn.disabled = false;
+            }
+        }
+
+        function goToGuest() {
+            window.location.href = 'index.html';
+        }
+
+        // Enter 键提交
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') handleSubmit();
+        });
+    </script>
+</body>
+</html>
