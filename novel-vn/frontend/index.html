@@ -215,6 +215,36 @@
             </div>
             <div class="file-list" id="fileList"></div>
         </div>
+        <div class="form-group">
+            <label>图片风格</label>
+            <select id="artStyle" style="width: 100%; padding: 12px; background: #0a1a3a; border: 1px solid #0f3460; border-radius: 8px; color: #fff; font-size: 14px;">
+                <option value="anime">动漫风格 - 二次元插画，赛璐璐上色</option>
+                <option value="realistic">真实写真 - 写实风格，专业人像</option>
+                <option value="watercolor">水彩插画 - 柔和色彩，梦幻氛围</option>
+                <option value="chinese_ink">古风水墨 - 传统水墨，古典美学</option>
+                <option value="comic">漫画风格 - 夸张线条，热血漫画风</option>
+                <option value="fantasy">奇幻风格 - 华丽装饰，魔幻氛围</option>
+            </select>
+            <small style="color: #666; display: block; margin-top: 6px;">
+                选择角色头像和场景背景的美术风格
+            </small>
+        </div>
+        <div class="form-group">
+            <label>额外风格关键词 <small style="color: #666;">（可选）</small></label>
+            <input type="text" id="styleKeywords" placeholder="如：赛博朋克, 古风, 仙侠, 现代都市..." style="width: 100%; padding: 12px; background: #0a1a3a; border: 1px solid #0f3460; border-radius: 8px; color: #fff; font-size: 14px;">
+            <small style="color: #666; display: block; margin-top: 6px;">
+                添加自定义风格关键词，让生成的图片更符合你的小说设定
+            </small>
+        </div>
+        <div class="form-group" style="text-align: left; margin-bottom: 30px;">
+            <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
+                <input type="checkbox" id="enableReview" checked style="width: 18px; height: 18px;">
+                <span>开启 AI 审阅（自动修复对话中的问题）</span>
+            </label>
+            <small style="color: #666; margin-left: 30px; display: block; margin-top: 6px;">
+                审阅可以检查 speaker 错误、缺失选择等问题，建议开启
+            </small>
+        </div>
         <button class="btn btn-primary" id="startBtn" onclick="startGame()">开始解析</button>
         <div class="error-msg" id="errorMsg"></div>
     </div>
@@ -387,11 +417,22 @@
                     chapters.push({ chapter_id: i, title: file.name.replace(/\.(txt|md)$/i, ''), content });
                 }
 
+                const enableReview = document.getElementById('enableReview').checked;
+                const artStyle = document.getElementById('artStyle').value;
+                const styleKeywords = document.getElementById('styleKeywords').value.trim();
+
                 const response = await fetch(`${API_BASE}/parse`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     credentials: 'include',
-                    body: JSON.stringify({ novel_title: title, chapters, visibility: 'public' })
+                    body: JSON.stringify({
+                        novel_title: title,
+                        chapters,
+                        visibility: 'public',
+                        enable_review: enableReview,
+                        art_style: artStyle,
+                        style_keywords: styleKeywords
+                    })
                 });
 
                 if (!response.ok) {

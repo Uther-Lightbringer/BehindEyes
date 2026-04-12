@@ -55,6 +55,7 @@ class ParseRequest(BaseModel):
     visibility: Optional[str] = "public"
     art_style: Optional[str] = "anime"
     style_keywords: Optional[str] = ""
+    enable_review: Optional[bool] = True
 
 
 class AuthRequest(BaseModel):
@@ -137,6 +138,7 @@ async def start_parse(request_body: ParseRequest, request: Request, background_t
         request_body.visibility or "public",
         request_body.art_style or "anime",
         request_body.style_keywords or "",
+        request_body.enable_review if request_body.enable_review is not None else True,
     )
     db.create_task(task_id, novel_id, request_body.novel_title, len(request_body.chapters))
 
@@ -228,11 +230,11 @@ async def run_parse_task(task_id: str, request: ParseRequest, novel_id: str, use
 
                 seg_id = segment_records[idx]["id"]
                 characters = result.get("characters", [])
-                summary = result.get("summary", "")
+                context_data = result.get("context_data", {})
 
-                # 更新片段摘要
-                if summary:
-                    db.update_segment_summary(seg_id, summary)
+                # 更新片段结构化上下文
+                if context_data:
+                    db.update_segment_context(seg_id, context_data)
 
                 # 收集角色
                 chapter_characters.extend(characters)
@@ -337,25 +339,25 @@ async def run_parse_task(task_id: str, request: ParseRequest, novel_id: str, use
 
 
 async def extract_segment_data(segment_content: str, segment_id: str, user_id: str, novel_id: str) -> Dict[str, Any]:
-    """并行提取片段的角色和摘要"""
+    """并行提取片段的角色和结构化上下文"""
     try:
-        # 并行执行角色提取和摘要生成
+        # 并行执行角色提取和上下文生成
         characters_task = deepseek.generate_character_cards(segment_content, user_id=user_id, novel_id=novel_id)
-        summary_task = deepseek.generate_segment_summary(segment_content, user_id=user_id, novel_id=novel_id)
+        context_task = deepseek.generate_segment_summary(segment_content, user_id=user_id, novel_id=novel_id)
 
-        characters, summary = await asyncio.gather(characters_task, summary_task)
+        characters, context_data = await asyncio.gather(characters_task, context_task)
 
         return {
             "segment_id": segment_id,
             "characters": characters or [],
-            "summary": summary or ""
+            "context_data": context_data or {"summary": "", "key_events": [], "character_states": {}, "unresolved_threads": []}
         }
     except Exception as e:
         print(f"片段 {segment_id} 提取失败: {e}")
         return {
             "segment_id": segment_id,
             "characters": [],
-            "summary": ""
+            "context_data": {"summary": "", "key_events": [], "character_states": {}, "unresolved_threads": []}
         }
 
 
@@ -431,16 +433,27 @@ async def run_generate_task(task_id: str, novel_id: str, chapter_index: int, cha
         segments = db.get_segments_by_chapter(chapter["id"])
 
         if segments:
-            # 使用片段模式生成（支持摘要传递）
+            # 使用片段模式生成（支持结构化上下文传递）
             print(f"[{task_id}] 使用片段模式: {len(segments)} 个片段")
-            segment_data = [
-                {
+
+            # 解析 context_data JSON
+            import json
+            segment_data = []
+            for seg in segments:
+                context_raw = seg.get("context_data", "{}")
+                if isinstance(context_raw, str):
+                    try:
+                        context_data = json.loads(context_raw)
+                    except:
+                        context_data = {"summary": seg.get("summary", "")}
+                else:
+                    context_data = context_raw
+
+                segment_data.append({
                     "index": seg["segment_index"],
                     "content": seg["content"],
-                    "summary": seg.get("summary", "")
-                }
-                for seg in segments
-            ]
+                    "context": context_data
+                })
 
             generated = await deepseek.generate_scenes_from_perspective(
                 chapter["raw_content"],
@@ -464,24 +477,31 @@ async def run_generate_task(task_id: str, novel_id: str, chapter_index: int, cha
 
         db.update_task(task_id, status="reviewing", progress=0.6, message="AI审阅中...")
 
-        # AI审阅（最多3次）
-        review_count = 0
-        while review_count < 3:
-            review_result = await deepseek.review_and_fix(
-                generated,
-                chapter["raw_content"],
-                generated["player_character_name"],
-                user_id=user_id,
-                novel_id=novel_id,
-            )
+        # 获取小说设置，判断是否开启审阅
+        novel_db = db.get_novel(novel_id)
+        enable_review = novel_db.get("enable_review", 1) if novel_db else 1
 
-            if review_result["fixed"]:
-                review_count += 1
-                db.update_task(task_id, progress=0.6 + review_count * 0.1, message=f"AI审阅修复 {review_count}/3...")
-                generated = review_result["data"]
-            else:
-                print(f"[{task_id}] 审阅通过")
-                break
+        # AI审阅（最多3次），仅在开启审阅时执行
+        if enable_review:
+            review_count = 0
+            while review_count < 3:
+                review_result = await deepseek.review_and_fix(
+                    generated,
+                    chapter["raw_content"],
+                    generated["player_character_name"],
+                    user_id=user_id,
+                    novel_id=novel_id,
+                )
+
+                if review_result["fixed"]:
+                    review_count += 1
+                    db.update_task(task_id, progress=0.6 + review_count * 0.1, message=f"AI审阅修复 {review_count}/3...")
+                    generated = review_result["data"]
+                else:
+                    print(f"[{task_id}] 审阅通过")
+                    break
+        else:
+            print(f"[{task_id}] 已跳过AI审阅（用户关闭）")
 
         # 持久化生成数据
         db.update_task(task_id, progress=0.9, message="保存结果...")

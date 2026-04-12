@@ -43,6 +43,7 @@ CREATE TABLE IF NOT EXISTS novels (
     visibility TEXT DEFAULT 'public',
     art_style TEXT DEFAULT 'anime',
     style_keywords TEXT DEFAULT '',
+    enable_review INTEGER DEFAULT 1,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE
 );
@@ -172,6 +173,41 @@ class Database:
     def _init_db(self):
         conn = sqlite3.connect(DB_PATH)
         conn.executescript(CREATE_TABLES)
+        # 迁移：添加缺失的列
+        # novels 表
+        for col in [
+            ("art_style", "TEXT DEFAULT 'anime'"),
+            ("style_keywords", "TEXT DEFAULT ''"),
+            ("enable_review", "INTEGER DEFAULT 1"),
+        ]:
+            try:
+                conn.execute(f"ALTER TABLE novels ADD COLUMN {col[0]} {col[1]}")
+            except sqlite3.OperationalError:
+                pass
+        # characters 表
+        for col in [
+            ("gender", "TEXT DEFAULT ''"),
+            ("age_range", "TEXT DEFAULT ''"),
+            ("appearance", "TEXT DEFAULT ''"),
+            ("clothing", "TEXT DEFAULT ''"),
+            ("distinctive_features", "TEXT DEFAULT ''"),
+            ("aliases", "TEXT DEFAULT '[]'"),
+            ("relations", "TEXT DEFAULT '{}'"),
+            ("image_path", "TEXT DEFAULT ''"),
+        ]:
+            try:
+                conn.execute(f"ALTER TABLE characters ADD COLUMN {col[0]} {col[1]}")
+            except sqlite3.OperationalError:
+                pass
+        # segments 表
+        for col in [
+            ("context_data", "TEXT DEFAULT '{}'"),  # 结构化上下文
+        ]:
+            try:
+                conn.execute(f"ALTER TABLE segments ADD COLUMN {col[0]} {col[1]}")
+            except sqlite3.OperationalError:
+                pass
+        conn.commit()
         conn.close()
 
     def _get_conn(self) -> sqlite3.Connection:
@@ -188,14 +224,15 @@ class Database:
         visibility: str = "public",
         art_style: str = "anime",
         style_keywords: str = "",
+        enable_review: int = 1,
     ) -> Optional[Dict[str, Any]]:
         conn = self._get_conn()
         try:
             conn.execute(
                 """INSERT OR IGNORE INTO novels
-                   (id, title, owner_id, visibility, art_style, style_keywords)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
-                (novel_id, title, owner_id, visibility, art_style, style_keywords),
+                   (id, title, owner_id, visibility, art_style, style_keywords, enable_review)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (novel_id, title, owner_id, visibility, art_style, style_keywords, enable_review),
             )
             conn.commit()
             return self.get_novel(novel_id)
@@ -322,8 +359,8 @@ class Database:
         """创建片段记录"""
         conn = self._get_conn()
         conn.execute(
-            """INSERT INTO segments (id, chapter_id, segment_index, content, summary)
-               VALUES (?, ?, ?, ?, '')""",
+            """INSERT INTO segments (id, chapter_id, segment_index, content, summary, context_data)
+               VALUES (?, ?, ?, ?, '', '{}')""",
             (segment_id, chapter_id, segment_index, content),
         )
         conn.commit()
@@ -345,6 +382,17 @@ class Database:
         conn.execute(
             "UPDATE segments SET summary = ? WHERE id = ?",
             (summary, segment_id),
+        )
+        conn.commit()
+        conn.close()
+
+    def update_segment_context(self, segment_id: str, context_data: Dict[str, Any]) -> None:
+        """更新片段的结构化上下文"""
+        import json
+        conn = self._get_conn()
+        conn.execute(
+            "UPDATE segments SET summary = ?, context_data = ? WHERE id = ?",
+            (context_data.get("summary", ""), json.dumps(context_data, ensure_ascii=False), segment_id),
         )
         conn.commit()
         conn.close()
@@ -651,25 +699,6 @@ class Database:
         conn.execute("DELETE FROM sessions WHERE expires_at < datetime('now')")
         conn.commit()
         conn.close()
-
-    # ===================== Novel (enhanced) =====================
-    def create_novel(self, novel_id: str, title: str, owner_id: str, visibility: str = 'public') -> Optional[Dict[str, Any]]:
-        conn = self._get_conn()
-        try:
-            conn.execute(
-                "INSERT OR IGNORE INTO novels (id, title, owner_id, visibility) VALUES (?, ?, ?, ?)",
-                (novel_id, title, owner_id, visibility),
-            )
-            conn.commit()
-            return self.get_novel(novel_id)
-        finally:
-            conn.close()
-
-    def get_novel(self, novel_id: str) -> Optional[Dict[str, Any]]:
-        conn = self._get_conn()
-        row = conn.execute("SELECT * FROM novels WHERE id = ?", (novel_id,)).fetchone()
-        conn.close()
-        return dict(row) if row else None
 
     def get_all_novels(self, include_private: bool = False) -> List[Dict[str, Any]]:
         conn = self._get_conn()
