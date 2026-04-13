@@ -300,17 +300,6 @@
         <div style="margin: 15px 0; text-align: center;">
             <button class="nav-link" onclick="showEventsModal()" style="font-size:14px;background:#0f3460;">📋 查看剧情事件</button>
         </div>
-        <!-- v0.2 新增：生成模式选择 -->
-        <div class="form-group" style="margin: 15px 0; padding: 15px; background: #0f3460; border-radius: 8px;">
-            <label style="display: block; margin-bottom: 10px; font-size: 14px; color: #e94560;">生成模式</label>
-            <select id="generationMode" style="width: 100%; padding: 10px; background: #0a1a3a; border: 1px solid #16213e; border-radius: 6px; color: #fff; font-size: 14px;">
-                <option value="pregenerate">预生成模式（推荐）- 提前生成分支预览</option>
-                <option value="realtime">实时生成模式 - 游玩时按需生成</option>
-            </select>
-            <small style="color: #666; display: block; margin-top: 6px;">
-                预生成模式会在开始前生成所有分支路线图，实时模式则边玩边生成
-            </small>
-        </div>
         <!-- 场景图片生成选项 -->
         <div class="form-group" style="margin: 15px 0; padding: 15px; background: #0f3460; border-radius: 8px;">
             <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
@@ -567,7 +556,7 @@
                 const styleKeywords = document.getElementById('styleKeywords').value.trim();
                 const eventExtractionMode = document.getElementById('eventExtractionMode')?.value || 'auto';
 
-                const response = await fetch(`${API_BASE}/parse-v2`, {
+                const response = await fetch(`${API_BASE}/parse`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     credentials: 'include',
@@ -1001,8 +990,6 @@
             if (!game.selectedCharId) return;
             if (!currentUser) { goToLogin(); return; }
 
-            const generationMode = document.getElementById('generationMode')?.value || 'pregenerate';
-
             const chapter = game.novel.chapters[selectedChapterIndex];
             const runs = chapter.generated_runs || [];
             // 查找相同角色的已有记录
@@ -1015,14 +1002,8 @@
                 return;
             }
 
-            // 根据生成模式选择流程
-            if (generationMode === 'pregenerate') {
-                // 预生成模式：先生成树结构预览
-                await doGenerateTree();
-            } else {
-                // 实时生成模式：直接开始游戏
-                await doGenerateOldWay();
-            }
+            // 统一使用预生成模式：先生成树结构预览
+            await doGenerateTree();
         }
 
         // 预生成模式：生成树结构
@@ -1030,7 +1011,7 @@
             showLoading('正在生成剧情树结构...');
             try {
                 const response = await fetch(
-                    `${API_BASE}/novel/${game.novelId}/generate-tree/${selectedChapterIndex}/${game.selectedCharId}`,
+                    `${API_BASE}/novel/${game.novelId}/generate/${selectedChapterIndex}/${game.selectedCharId}`,
                     { method: 'POST', credentials: 'include' }
                 );
                 if (!response.ok) {
@@ -1413,54 +1394,6 @@
 
         // 存储当前节点信息
         game.currentNode = null;
-
-        // 旧方式生成（实时模式兼容）
-        async function doGenerateOldWay() {
-            showLoading(`正在以${getSelectedCharName()}视角生成场景...`);
-            try {
-                const response = await fetch(
-                    `${API_BASE}/generate/${game.novelId}/${selectedChapterIndex}/${game.selectedCharId}`,
-                    { method: 'POST', credentials: 'include' }
-                );
-                if (!response.ok) {
-                    const errData = await response.json().catch(() => null);
-                    if (errData && errData.detail === '请先登录') {
-                        hideLoading();
-                        goToLogin();
-                        return;
-                    }
-                    const text = await response.text();
-                    throw new Error('发起生成任务失败: ' + response.status + ' ' + text);
-                }
-
-                const text = await response.text();
-                const taskInfo = JSON.parse(text);
-                updateLoading('AI生成中... task_id=' + taskInfo.task_id);
-
-                try {
-                    const result = await pollTaskStatus(taskInfo.task_id);
-                    if (!result.result) throw new Error('生成结果为空');
-
-                    const generated = result.result;
-                    game.novel.chapters[selectedChapterIndex].generated_scenes = generated;
-                    game.novel.chapters[selectedChapterIndex].player_character_id = game.selectedCharId;
-                    initGame();
-                } catch (err) {
-                    console.error('Poll or init error:', err);
-                    document.getElementById('errorMsg').textContent = '生成失败: ' + err.message;
-                    hideLoading();
-                }
-            } catch (err) {
-                console.error(err);
-                document.getElementById('errorMsg').textContent = '生成失败: ' + err.message;
-                hideLoading();
-            }
-        }
-
-        // 兼容旧代码的别名
-        async function doGenerate() {
-            await doGenerateOldWay();
-        }
 
         // 使用已有缓存
         async function useCachedRun(runId) {
