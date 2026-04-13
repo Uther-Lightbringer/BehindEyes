@@ -1115,13 +1115,29 @@ async def update_user_settings_endpoint(
 
     chunk_size = body.get("chunk_size")
     chunk_overlap = body.get("chunk_overlap")
+    llm_provider = body.get("llm_provider")
+    llm_model = body.get("llm_model")
+    custom_api_keys = body.get("custom_api_keys")
+    image_api_key = body.get("image_api_key")
 
     if chunk_size is not None and (not isinstance(chunk_size, int) or chunk_size < 2000 or chunk_size > 10000):
         raise HTTPException(status_code=400, detail="分段字数需在 2000-10000 之间")
     if chunk_overlap is not None and (not isinstance(chunk_overlap, int) or chunk_overlap < 0 or chunk_overlap >= 1000):
         raise HTTPException(status_code=400, detail="重叠字数需在 0-999 之间")
 
-    db.update_user_settings(user["id"], chunk_size, chunk_overlap)
+    # 验证 LLM 提供商
+    if llm_provider is not None and llm_provider not in PRESET_PROVIDERS:
+        raise HTTPException(status_code=400, detail=f"不支持的 LLM 提供商: {llm_provider}")
+
+    db.update_user_settings(
+        user["id"],
+        chunk_size=chunk_size,
+        chunk_overlap=chunk_overlap,
+        llm_provider=llm_provider,
+        llm_model=llm_model,
+        custom_api_keys=custom_api_keys,
+        image_api_key=image_api_key
+    )
     settings = db.get_user_settings(user["id"])
     settings["max_total_chars"] = settings.get("chunk_size", 5000) * 5
     return settings
@@ -1174,6 +1190,139 @@ async def health():
         "deepseek_configured": deepseek.is_configured(),
         "image_generation_configured": image_client.is_configured(),
     }
+
+
+# ============================================================
+# LLM 提供商 API
+# ============================================================
+from llm_client import LLMClient, PRESET_PROVIDERS
+
+@app.get("/api/llm/providers")
+async def get_llm_providers():
+    """获取所有支持的 LLM 提供商列表"""
+    return LLMClient.get_available_providers()
+
+
+@app.get("/api/llm/providers/{provider_id}/models")
+async def get_llm_provider_models(provider_id: str):
+    """获取指定提供商支持的模型列表"""
+    models = LLMClient.get_provider_models(provider_id)
+    if not models:
+        return {"error": "未知的提供商", "provider_id": provider_id}
+    return {"provider_id": provider_id, "models": models}
+
+
+class LLMTestRequest(BaseModel):
+    """LLM 测试请求"""
+    provider_id: str
+    model: Optional[str] = None
+    api_key: Optional[str] = None
+
+
+@app.post("/api/llm/test")
+async def test_llm_connection(request: LLMTestRequest):
+    """测试 LLM 连接是否正常"""
+    try:
+        client = LLMClient(
+            provider_id=request.provider_id,
+            model=request.model,
+            custom_api_key=request.api_key
+        )
+
+        if not client.is_configured():
+            return {
+                "success": False,
+                "error": "API Key 未配置，请输入 API Key 或设置环境变量"
+            }
+
+        # 发送一个简单的测试请求
+        response = await client.chat(
+            messages=[{"role": "user", "content": "你好，请回复'测试成功'四个字"}],
+            max_tokens=50,
+            temperature=0.1
+        )
+
+        if response and len(response.strip()) > 0:
+            return {
+                "success": True,
+                "message": f"连接成功！模型响应: {response[:100]}",
+                "provider": request.provider_id,
+                "model": client.model
+            }
+        else:
+            return {
+                "success": False,
+                "error": "模型返回空响应"
+            }
+
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+
+class ImageTestRequest(BaseModel):
+    """图片生成测试请求"""
+    api_key: Optional[str] = None
+
+
+@app.post("/api/image/test")
+async def test_image_connection(request: ImageTestRequest):
+    """测试图片生成 API 连接是否正常"""
+    import aiohttp
+
+    api_key = request.api_key or os.getenv("EVOLINK_API_KEY")
+    if not api_key:
+        return {
+            "success": False,
+            "error": "API Key 未配置，请输入 API Key 或设置环境变量"
+        }
+
+    try:
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
+        # 发送一个简单的测试请求（生成一个很小的测试图片）
+        payload = {
+            "model": "z-image-turbo",
+            "prompt": "一只可爱的小猫，简单素描",
+            "size": "1:1",
+        }
+
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                "https://api.evolink.ai/v1/images/generations",
+                headers=headers,
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=30),
+            ) as resp:
+                if resp.status == 200 or resp.status == 201:
+                    task_info = await resp.json()
+                    task_id = task_info.get("id")
+                    return {
+                        "success": True,
+                        "message": f"连接成功！任务已提交（ID: {task_id[:8]}...）",
+                        "task_id": task_id
+                    }
+                else:
+                    error_text = await resp.text()
+                    return {
+                        "success": False,
+                        "error": f"API 返回错误 ({resp.status}): {error_text[:200]}"
+                    }
+
+    except aiohttp.ClientError as e:
+        return {
+            "success": False,
+            "error": f"网络连接错误: {str(e)}"
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e)
+        }
 
 
 # ============================================================

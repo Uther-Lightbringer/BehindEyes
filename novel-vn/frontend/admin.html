@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>管理面板 - 视觉小说生成器</title>
+    <title>管理面板 - BehindEyes</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: "Microsoft YaHei", sans-serif; background: #1a1a2e; color: #eee; min-height: 100vh; }
@@ -118,7 +118,7 @@
 <body>
     <div class="navbar">
         <div class="navbar-left">
-            <a class="navbar-brand" href="index.html">视觉小说生成器</a>
+            <a class="navbar-brand" href="index.html">BehindEyes</a>
             <a class="nav-link" href="admin.html">管理面板</a>
         </div>
         <div class="navbar-right">
@@ -208,13 +208,99 @@
                             = 分段数上限(5) × 分段字数，超过此值的章节无法上传。
                         </small>
                     </div>
+                </div>
 
-                    <div style="margin-top: 24px; display: flex; gap: 12px;">
+                <!-- LLM 模型配置 -->
+                <div class="stat-card" style="text-align: left; margin-top: 20px;">
+                    <h3 style="color: #e94560; margin-bottom: 20px;">大模型配置</h3>
+
+                    <div style="margin-bottom: 20px;">
+                        <label style="display: block; color: #aaa; font-size: 14px; margin-bottom: 8px;">
+                            选择大模型提供商
+                        </label>
+                        <select id="settingLLMProvider"
+                            style="width: 100%; padding: 10px; background: #0a1a3a; border: 1px solid #0f3460;
+                                   border-radius: 8px; color: #fff; font-size: 16px; cursor: pointer;">
+                            <option value="deepseek">DeepSeek</option>
+                            <option value="openai">OpenAI</option>
+                            <option value="minimax">MiniMax</option>
+                            <option value="qwen">通义千问</option>
+                            <option value="zhipu">智谱AI</option>
+                        </select>
+                        <small style="color: #666; font-size: 12px; margin-top: 4px; display: block;">
+                            选择用于生成角色卡和场景的大模型服务。
+                        </small>
+                    </div>
+
+                    <div style="margin-bottom: 20px;">
+                        <label style="display: block; color: #aaa; font-size: 14px; margin-bottom: 8px;">
+                            选择模型
+                        </label>
+                        <select id="settingLLMModel"
+                            style="width: 100%; padding: 10px; background: #0a1a3a; border: 1px solid #0f3460;
+                                   border-radius: 8px; color: #fff; font-size: 16px; cursor: pointer;">
+                            <option value="">使用默认模型</option>
+                        </select>
+                        <small style="color: #666; font-size: 12px; margin-top: 4px; display: block;">
+                            不选择则使用该提供商的默认模型。
+                        </small>
+                    </div>
+
+                    <div style="margin-bottom: 20px;">
+                        <label style="display: block; color: #aaa; font-size: 14px; margin-bottom: 8px;">
+                            API Key（可选）
+                        </label>
+                        <input type="password" id="settingLLMAPIKey" placeholder="留空则使用系统默认配置"
+                            style="width: 100%; padding: 10px; background: #0a1a3a; border: 1px solid #0f3460;
+                                   border-radius: 8px; color: #fff; font-size: 16px;" />
+                        <small style="color: #666; font-size: 12px; margin-top: 4px; display: block;">
+                            输入您自己的 API Key，留空则使用系统环境变量配置。
+                        </small>
+                    </div>
+
+                    <div style="margin-top: 24px; display: flex; gap: 12px; flex-wrap: wrap;">
                         <button onclick="saveSettings()" style="padding: 10px 24px; background: #e94560; color: #fff; border: none; border-radius: 8px; cursor: pointer; font-size: 14px;">保存设置</button>
+                        <button onclick="testLLMConnection()" id="testLLMBtn" style="padding: 10px 24px; background: #0a6e0a; color: #fff; border: none; border-radius: 8px; cursor: pointer; font-size: 14px;">测试连接</button>
                         <button onclick="resetSettings()" style="padding: 10px 24px; background: #0f3460; color: #aaa; border: none; border-radius: 8px; cursor: pointer; font-size: 14px;">恢复默认</button>
                     </div>
 
                     <div id="settingsToast" style="margin-top: 16px; display: none; padding: 10px 16px; border-radius: 8px; font-size: 14px;"></div>
+                </div>
+
+                <!-- 文生图配置 -->
+                <div class="stat-card" style="text-align: left; margin-top: 20px;">
+                    <h3 style="color: #e94560; margin-bottom: 20px;">文生图配置</h3>
+
+                    <div style="margin-bottom: 20px;">
+                        <label style="display: block; color: #aaa; font-size: 14px; margin-bottom: 8px;">
+                            图片生成服务
+                        </label>
+                        <select id="settingImageProvider"
+                            style="width: 100%; padding: 10px; background: #0a1a3a; border: 1px solid #0f3460;
+                                   border-radius: 8px; color: #fff; font-size: 16px; cursor: pointer;">
+                            <option value="evolink">Evolink (z-image-turbo)</option>
+                        </select>
+                        <small style="color: #666; font-size: 12px; margin-top: 4px; display: block;">
+                            用于生成角色头像和场景背景图。图生图功能开发中...
+                        </small>
+                    </div>
+
+                    <div style="margin-bottom: 20px;">
+                        <label style="display: block; color: #aaa; font-size: 14px; margin-bottom: 8px;">
+                            API Key（可选）
+                        </label>
+                        <input type="password" id="settingImageAPIKey" placeholder="留空则使用系统默认配置"
+                            style="width: 100%; padding: 10px; background: #0a1a3a; border: 1px solid #0f3460;
+                                   border-radius: 8px; color: #fff; font-size: 16px;" />
+                        <small style="color: #666; font-size: 12px; margin-top: 4px; display: block;">
+                            输入您自己的 Evolink API Key，留空则使用系统环境变量配置。
+                        </small>
+                    </div>
+
+                    <div style="margin-top: 24px; display: flex; gap: 12px; flex-wrap: wrap;">
+                        <button onclick="saveSettings()" style="padding: 10px 24px; background: #e94560; color: #fff; border: none; border-radius: 8px; cursor: pointer; font-size: 14px;">保存设置</button>
+                        <button onclick="testImageConnection()" id="testImageBtn" style="padding: 10px 24px; background: #0a6e0a; color: #fff; border: none; border-radius: 8px; cursor: pointer; font-size: 14px;">测试连接</button>
+                    </div>
                 </div>
             </div>
         </div>
@@ -593,6 +679,9 @@
         // ============================================================
         // 生成设置
         // ============================================================
+        let llmProviders = [];
+        let currentCustomAPIKeys = {};
+
         async function loadSettings() {
             try {
                 const res = await fetch(`${API_BASE}/settings`, { credentials: 'include' });
@@ -600,10 +689,56 @@
                 document.getElementById('settingChunkSize').value = data.chunk_size || 5000;
                 document.getElementById('settingChunkOverlap').value = data.chunk_overlap || 300;
                 updateMaxTotal(data.chunk_size || 5000);
+
+                // LLM 设置
+                document.getElementById('settingLLMProvider').value = data.llm_provider || 'deepseek';
+                currentCustomAPIKeys = data.custom_api_keys || {};
+                await loadProviderModels(data.llm_provider || 'deepseek');
+                document.getElementById('settingLLMModel').value = data.llm_model || '';
+                // API Key 不回显，只显示占位符
+                if (currentCustomAPIKeys[data.llm_provider]) {
+                    document.getElementById('settingLLMAPIKey').placeholder = '已配置（点击修改）';
+                }
+
+                // 图片生成设置
+                if (data.image_api_key) {
+                    document.getElementById('settingImageAPIKey').placeholder = '已配置（点击修改）';
+                }
             } catch (e) {
                 console.error('加载设置失败', e);
             }
         }
+
+        async function loadProviderModels(providerId) {
+            try {
+                const res = await fetch(`${API_BASE}/llm/providers/${providerId}/models`);
+                const data = await res.json();
+                const select = document.getElementById('settingLLMModel');
+                select.innerHTML = '<option value="">使用默认模型</option>';
+                if (data.models) {
+                    data.models.forEach(model => {
+                        const opt = document.createElement('option');
+                        opt.value = model;
+                        opt.textContent = model;
+                        select.appendChild(opt);
+                    });
+                }
+            } catch (e) {
+                console.error('加载模型列表失败', e);
+            }
+        }
+
+        document.getElementById('settingLLMProvider').addEventListener('change', async function() {
+            const providerId = this.value;
+            await loadProviderModels(providerId);
+            document.getElementById('settingLLMModel').value = '';
+            // 更新 API Key 占位符
+            if (currentCustomAPIKeys[providerId]) {
+                document.getElementById('settingLLMAPIKey').placeholder = '已配置（点击修改）';
+            } else {
+                document.getElementById('settingLLMAPIKey').placeholder = '留空则使用系统默认配置';
+            }
+        });
 
         function updateMaxTotal(chunkSize) {
             document.getElementById('settingMaxTotal').textContent = (chunkSize * 5).toLocaleString();
@@ -625,6 +760,9 @@
         async function saveSettings() {
             const chunkSize = parseInt(document.getElementById('settingChunkSize').value);
             const chunkOverlap = parseInt(document.getElementById('settingChunkOverlap').value);
+            const llmProvider = document.getElementById('settingLLMProvider').value;
+            const llmModel = document.getElementById('settingLLMModel').value;
+            const llmAPIKey = document.getElementById('settingLLMAPIKey').value;
 
             if (isNaN(chunkSize) || chunkSize < 2000 || chunkSize > 10000) {
                 showSettingsToast('分段字数需在 2000-10000 之间', 'error');
@@ -635,17 +773,41 @@
                 return;
             }
 
+            const imageAPIKey = document.getElementById('settingImageAPIKey').value;
+
+            // 构建自定义 API Keys 对象
+            const customKeys = { ...currentCustomAPIKeys };
+            if (llmAPIKey) {
+                customKeys[llmProvider] = llmAPIKey;
+            }
+
             try {
                 const res = await fetch(`${API_BASE}/settings`, {
                     method: 'POST',
                     credentials: 'include',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ chunk_size: chunkSize, chunk_overlap: chunkOverlap })
+                    body: JSON.stringify({
+                        chunk_size: chunkSize,
+                        chunk_overlap: chunkOverlap,
+                        llm_provider: llmProvider,
+                        llm_model: llmModel || null,
+                        custom_api_keys: customKeys,
+                        image_api_key: imageAPIKey || null
+                    })
                 });
                 const data = await res.json();
                 if (res.ok) {
                     showSettingsToast('设置已保存', 'success');
                     updateMaxTotal(data.chunk_size);
+                    currentCustomAPIKeys = data.custom_api_keys || {};
+                    document.getElementById('settingLLMAPIKey').value = '';
+                    document.getElementById('settingImageAPIKey').value = '';
+                    if (currentCustomAPIKeys[llmProvider]) {
+                        document.getElementById('settingLLMAPIKey').placeholder = '已配置（点击修改）';
+                    }
+                    if (data.image_api_key) {
+                        document.getElementById('settingImageAPIKey').placeholder = '已配置（点击修改）';
+                    }
                 } else {
                     showSettingsToast(data.detail || '保存失败', 'error');
                 }
@@ -657,6 +819,13 @@
         async function resetSettings() {
             document.getElementById('settingChunkSize').value = 5000;
             document.getElementById('settingChunkOverlap').value = 300;
+            document.getElementById('settingLLMProvider').value = 'deepseek';
+            document.getElementById('settingLLMModel').value = '';
+            document.getElementById('settingLLMAPIKey').value = '';
+            document.getElementById('settingLLMAPIKey').placeholder = '留空则使用系统默认配置';
+            document.getElementById('settingImageAPIKey').value = '';
+            document.getElementById('settingImageAPIKey').placeholder = '留空则使用系统默认配置';
+            await loadProviderModels('deepseek');
             updateMaxTotal(5000);
             try {
                 const res = await fetch(`${API_BASE}/settings`, {
@@ -667,6 +836,76 @@
                 });
                 if (res.ok) showSettingsToast('已恢复默认设置', 'success');
             } catch { showSettingsToast('重置失败', 'error'); }
+        }
+
+        async function testLLMConnection() {
+            const provider = document.getElementById('settingLLMProvider').value;
+            const model = document.getElementById('settingLLMModel').value;
+            const apiKey = document.getElementById('settingLLMAPIKey').value;
+
+            const btn = document.getElementById('testLLMBtn');
+            const originalText = btn.textContent;
+            btn.textContent = '测试中...';
+            btn.disabled = true;
+            btn.style.background = '#666';
+
+            try {
+                const res = await fetch(`${API_BASE}/llm/test`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        provider_id: provider,
+                        model: model || null,
+                        api_key: apiKey || null
+                    })
+                });
+                const data = await res.json();
+
+                if (data.success) {
+                    showSettingsToast('✓ ' + data.message, 'success');
+                } else {
+                    showSettingsToast('✗ ' + data.error, 'error');
+                }
+            } catch (e) {
+                showSettingsToast('网络错误: ' + e.message, 'error');
+            } finally {
+                btn.textContent = originalText;
+                btn.disabled = false;
+                btn.style.background = '#0a6e0a';
+            }
+        }
+
+        async function testImageConnection() {
+            const apiKey = document.getElementById('settingImageAPIKey').value;
+
+            const btn = document.getElementById('testImageBtn');
+            const originalText = btn.textContent;
+            btn.textContent = '测试中...';
+            btn.disabled = true;
+            btn.style.background = '#666';
+
+            try {
+                const res = await fetch(`${API_BASE}/image/test`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        api_key: apiKey || null
+                    })
+                });
+                const data = await res.json();
+
+                if (data.success) {
+                    showSettingsToast('✓ ' + data.message, 'success');
+                } else {
+                    showSettingsToast('✗ ' + data.error, 'error');
+                }
+            } catch (e) {
+                showSettingsToast('网络错误: ' + e.message, 'error');
+            } finally {
+                btn.textContent = originalText;
+                btn.disabled = false;
+                btn.style.background = '#0a6e0a';
+            }
         }
 
         // ============================================================

@@ -139,6 +139,9 @@ CREATE TABLE IF NOT EXISTS user_settings (
     user_id TEXT PRIMARY KEY,
     chunk_size INTEGER DEFAULT 5000,
     chunk_overlap INTEGER DEFAULT 300,
+    llm_provider TEXT DEFAULT 'deepseek',
+    llm_model TEXT DEFAULT '',
+    custom_api_keys TEXT DEFAULT '{}',
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
@@ -321,6 +324,17 @@ class Database:
             conn.execute("ALTER TABLE story_nodes ADD COLUMN auto_next TEXT")
         except sqlite3.OperationalError:
             pass
+        # user_settings 表 - v0.2 新增字段（LLM 选择）
+        for col in [
+            ("llm_provider", "TEXT DEFAULT 'deepseek'"),
+            ("llm_model", "TEXT DEFAULT ''"),
+            ("custom_api_keys", "TEXT DEFAULT '{}'"),
+            ("image_api_key", "TEXT DEFAULT ''"),
+        ]:
+            try:
+                conn.execute(f"ALTER TABLE user_settings ADD COLUMN {col[0]} {col[1]}")
+            except sqlite3.OperationalError:
+                pass
         conn.commit()
         conn.close()
 
@@ -889,24 +903,56 @@ class Database:
     def get_user_settings(self, user_id: str) -> Dict[str, Any]:
         conn = self._get_conn()
         row = conn.execute(
-            "SELECT chunk_size, chunk_overlap FROM user_settings WHERE user_id = ?",
+            "SELECT * FROM user_settings WHERE user_id = ?",
             (user_id,),
         ).fetchone()
         conn.close()
         if row:
-            return {"chunk_size": row["chunk_size"], "chunk_overlap": row["chunk_overlap"]}
-        return {"chunk_size": 5000, "chunk_overlap": 300}
+            d = dict(row)
+            # 解析 custom_api_keys
+            if d.get("custom_api_keys"):
+                try:
+                    d["custom_api_keys"] = json.loads(d["custom_api_keys"])
+                except:
+                    d["custom_api_keys"] = {}
+            else:
+                d["custom_api_keys"] = {}
+            return d
+        return {
+            "chunk_size": 5000,
+            "chunk_overlap": 300,
+            "llm_provider": "deepseek",
+            "llm_model": "",
+            "custom_api_keys": {},
+            "image_api_key": ""
+        }
 
-    def update_user_settings(self, user_id: str, chunk_size: int = None, chunk_overlap: int = None) -> None:
+    def update_user_settings(
+        self,
+        user_id: str,
+        chunk_size: int = None,
+        chunk_overlap: int = None,
+        llm_provider: str = None,
+        llm_model: str = None,
+        custom_api_keys: Dict = None,
+        image_api_key: str = None
+    ) -> None:
         defaults = self.get_user_settings(user_id)
-        new_chunk_size = chunk_size if chunk_size is not None else defaults["chunk_size"]
-        new_overlap = chunk_overlap if chunk_overlap is not None else defaults["chunk_overlap"]
+        new_chunk_size = chunk_size if chunk_size is not None else defaults.get("chunk_size", 5000)
+        new_overlap = chunk_overlap if chunk_overlap is not None else defaults.get("chunk_overlap", 300)
+        new_provider = llm_provider if llm_provider is not None else defaults.get("llm_provider", "deepseek")
+        new_model = llm_model if llm_model is not None else defaults.get("llm_model", "")
+        new_keys = custom_api_keys if custom_api_keys is not None else defaults.get("custom_api_keys", {})
+        new_image_key = image_api_key if image_api_key is not None else defaults.get("image_api_key", "")
+
         conn = self._get_conn()
         conn.execute(
-            """INSERT INTO user_settings (user_id, chunk_size, chunk_overlap)
-               VALUES (?, ?, ?)
-               ON CONFLICT(user_id) DO UPDATE SET chunk_size = ?, chunk_overlap = ?""",
-            (user_id, new_chunk_size, new_overlap, new_chunk_size, new_overlap),
+            """INSERT INTO user_settings (user_id, chunk_size, chunk_overlap, llm_provider, llm_model, custom_api_keys, image_api_key)
+               VALUES (?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(user_id) DO UPDATE SET
+                   chunk_size = ?, chunk_overlap = ?, llm_provider = ?, llm_model = ?, custom_api_keys = ?, image_api_key = ?""",
+            (user_id, new_chunk_size, new_overlap, new_provider, new_model, json.dumps(new_keys), new_image_key,
+             new_chunk_size, new_overlap, new_provider, new_model, json.dumps(new_keys), new_image_key),
         )
         conn.commit()
         conn.close()

@@ -1,6 +1,7 @@
 """
-DeepSeek API 客户端 - 角色视角版本
+LLM API 客户端 - 角色视角版本
 支持: 雪花ID生成、两阶段解析(角色卡→场景)、AI审阅、角色视角生成
+支持多提供商: DeepSeek、OpenAI、MiniMax、Qwen、智谱AI 等
 """
 
 import os
@@ -330,23 +331,55 @@ def generate_id() -> str:
 
 
 # ============================================================
-# DeepSeek 客户端
+# DeepSeek 客户端（支持多 LLM 提供商）
 # ============================================================
 class DeepSeekClient:
-    def __init__(self, db=None):
+    def __init__(self, db=None, user_id: str = None):
         self.db = db
-        api_key = os.getenv("AI_DEEPSEEK_API_KEY")
-        if not api_key:
-            print("警告: AI_DEEPSEEK_API_KEY 环境变量未设置")
-            self.client = None
-        else:
+        self.user_id = user_id
+        self._llm_client = None
+        self._init_llm_client()
+
+    def set_user(self, user_id: str):
+        """设置当前用户并重新初始化 LLM 客户端"""
+        if user_id != self.user_id:
+            self.user_id = user_id
+            self._init_llm_client()
+
+    def _init_llm_client(self):
+        """初始化 LLM 客户端"""
+        from llm_client import LLMClient
+
+        # 获取用户设置
+        provider = "deepseek"
+        model = None
+        custom_api_key = None
+
+        if self.db and self.user_id:
+            settings = self.db.get_user_settings(self.user_id)
+            provider = settings.get("llm_provider", "deepseek")
+            model = settings.get("llm_model") or None
+            custom_keys = settings.get("custom_api_keys", {})
+            custom_api_key = custom_keys.get(provider)
+
+        self._llm_client = LLMClient(
+            provider_id=provider,
+            model=model,
+            custom_api_key=custom_api_key
+        )
+
+        # 保持旧的 client 属性用于兼容（仅用于调试）
+        api_key = custom_api_key or os.getenv("AI_DEEPSEEK_API_KEY")
+        if api_key:
             self.client = OpenAI(
                 api_key=api_key,
                 base_url="https://api.deepseek.com"
             )
+        else:
+            self.client = None
 
     def is_configured(self) -> bool:
-        return self.client is not None
+        return self._llm_client.is_configured()
 
     async def _call_api(
         self,
@@ -369,23 +402,15 @@ class DeepSeekClient:
         Returns:
             AI 响应文本
         """
-        if not self.client:
-            raise ValueError("AI API 未配置")
-
         try:
-            response = self.client.chat.completions.create(
-                model="deepseek-chat",
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
+            result = await self._llm_client.chat(
+                messages=[{"role": "user", "content": user_prompt}],
+                system_prompt=system_prompt,
                 temperature=temperature,
                 max_tokens=max_tokens,
-                timeout=timeout,
                 response_format={"type": "json_object"}
             )
 
-            result = response.choices[0].message.content
             if not result or not result.strip():
                 raise ValueError("AI 返回空响应")
 
@@ -402,7 +427,11 @@ class DeepSeekClient:
     # ============================================================
     async def generate_character_cards(self, content: str, user_id: str = None, novel_id: str = None) -> List[Dict[str, Any]]:
         """第一阶段: 使用AI生成详细角色卡片"""
-        if not self.client:
+        # 切换到指定用户的 LLM 配置
+        if user_id:
+            self.set_user(user_id)
+
+        if not self.is_configured():
             return self._fallback_characters(content)
 
         system_prompt = PROMPT_CHARACTER_CARD_SYSTEM
@@ -411,25 +440,17 @@ class DeepSeekClient:
         max_retries = 3
         for attempt in range(max_retries):
             try:
-                response = self.client.chat.completions.create(
-                    model="deepseek-chat",
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt}
-                    ],
+                result_text = await self._llm_client.chat_with_json_response(
+                    messages=[{"role": "user", "content": user_prompt}],
+                    system_prompt=system_prompt,
                     temperature=0.3,
-                    max_tokens=4000,
-                    timeout=120.0,
-                    response_format={"type": "json_object"}
+                    max_tokens=4000
                 )
-
-                result_text = response.choices[0].message.content
                 if not result_text or not result_text.strip():
                     print(f"角色卡片生成返回空内容，重试 {attempt + 1}/{max_retries}")
                     continue
 
-                result_text = self._extract_json(result_text)
-                data = json.loads(result_text)
+                data = result_text
 
                 if isinstance(data, list):
                     characters = data
@@ -448,20 +469,17 @@ class DeepSeekClient:
                     prompt_type="character_card",
                     sys_prompt=system_prompt,
                     user_prompt=user_prompt,
-                    ai_response=result_text,
-                    model="deepseek-chat",
+                    ai_response=json.dumps(result_text, ensure_ascii=False),
+                    model=self._llm_client.model,
                     user_id=user_id,
                     novel_id=novel_id,
                 )
 
                 return characters
 
-            except json.JSONDecodeError as e:
-                print(f"角色卡片JSON解析失败: {e}，重试 {attempt + 1}/{max_retries}")
-                continue
             except Exception as e:
-                print(f"角色卡片生成失败: {e}")
-                break
+                print(f"角色卡片生成失败: {e}，重试 {attempt + 1}/{max_retries}")
+                continue
 
         return self._fallback_characters(content)
 
@@ -685,7 +703,11 @@ class DeepSeekClient:
                 "flags_set": ["剧情标记"]
             }
         """
-        if not self.client:
+        # 切换到指定用户的 LLM 配置
+        if user_id:
+            self.set_user(user_id)
+
+        if not self.is_configured():
             return {"summary": "", "key_events": [], "character_states": {}, "unresolved_threads": []}
 
         prompt = f"""分析以下小说片段，提取结构化上下文信息。
@@ -714,20 +736,11 @@ class DeepSeekClient:
 只输出JSON，不要其他内容。"""
 
         try:
-            response = self.client.chat.completions.create(
-                model="deepseek-chat",
-                messages=[
-                    {"role": "user", "content": prompt}
-                ],
+            context_data = await self._llm_client.chat_with_json_response(
+                messages=[{"role": "user", "content": prompt}],
                 temperature=0.3,
-                max_tokens=800,
-                timeout=30.0,
-                response_format={"type": "json_object"}
+                max_tokens=800
             )
-
-            result_text = response.choices[0].message.content.strip()
-            result_text = self._extract_json(result_text)
-            context_data = json.loads(result_text)
 
             # 确保必要字段存在
             context_data.setdefault("summary", "")
@@ -741,8 +754,8 @@ class DeepSeekClient:
                 prompt_type="segment_context",
                 sys_prompt="",
                 user_prompt=prompt,
-                ai_response=result_text,
-                model="deepseek-chat",
+                ai_response=json.dumps(context_data, ensure_ascii=False),
+                model=self._llm_client.model,
                 user_id=user_id,
                 novel_id=novel_id,
             )
@@ -1049,11 +1062,14 @@ class DeepSeekClient:
         Returns:
             生成的场景数据
         """
+        # 切换到指定用户的 LLM 配置
+        if user_id:
+            self.set_user(user_id)
 
         self._current_user_id = user_id
         self._current_novel_id = novel_id
 
-        if not self.client:
+        if not self.is_configured():
             return self._fallback_scenes(content, characters, player_character_id)
 
         # 找到玩家角色
@@ -1146,25 +1162,15 @@ class DeepSeekClient:
 
             for attempt in range(max_retries):
                 try:
-                    response = self.client.chat.completions.create(
-                        model="deepseek-chat",
-                        messages=[
-                            {"role": "system", "content": system_prompt},
-                            {"role": "user", "content": prompt}
-                        ],
+                    result = await self._llm_client.chat_with_json_response(
+                        messages=[{"role": "user", "content": prompt}],
+                        system_prompt=system_prompt,
                         temperature=0.5,
-                        max_tokens=8000,
-                        timeout=180.0,
-                        response_format={"type": "json_object"}
+                        max_tokens=8000
                     )
-
-                    result_text = response.choices[0].message.content
-                    if not result_text or not result_text.strip():
+                    if not result:
                         print(f"场景生成返回空内容，重试 {attempt + 1}/{max_retries}")
                         continue
-
-                    result_text = self._extract_json(result_text)
-                    result = json.loads(result_text)
 
                     scenes = result.get("scenes", [])
                     choices = result.get("choices", [])
@@ -1181,8 +1187,8 @@ class DeepSeekClient:
                         prompt_type="scene_generation",
                         sys_prompt=system_prompt,
                         user_prompt=prompt,
-                        ai_response=result_text,
-                        model="deepseek-chat",
+                        ai_response=json.dumps(result, ensure_ascii=False),
+                        model=self._llm_client.model,
                         user_id=getattr(self, '_current_user_id', None),
                         novel_id=getattr(self, '_current_novel_id', None),
                         character_id=player_char["id"],
@@ -1190,8 +1196,8 @@ class DeepSeekClient:
 
                     return {"scenes": scenes, "choices": choices}
 
-                except json.JSONDecodeError as e:
-                    print(f"场景JSON解析失败: {e}，重试 {attempt + 1}/{max_retries}")
+                except Exception as e:
+                    print(f"场景生成失败: {e}，重试 {attempt + 1}/{max_retries}")
                     continue
                 except Exception as e:
                     print(f"场景生成失败: {e}")
@@ -1316,8 +1322,11 @@ class DeepSeekClient:
         novel_id: str = None,
     ) -> Dict[str, Any]:
         """审阅生成的角色视角场景，检查问题并修复"""
+        # 切换到指定用户的 LLM 配置
+        if user_id:
+            self.set_user(user_id)
 
-        if not self.client:
+        if not self.is_configured():
             return {"fixed": False, "data": generated_data}
 
         scenes = generated_data.get("scenes", [])
@@ -1333,32 +1342,22 @@ class DeepSeekClient:
         max_retries = 3
         for attempt in range(max_retries):
             try:
-                response = self.client.chat.completions.create(
-                    model="deepseek-chat",
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": prompt}
-                    ],
+                review_result = await self._llm_client.chat_with_json_response(
+                    messages=[{"role": "user", "content": prompt}],
+                    system_prompt=system_prompt,
                     temperature=0.3,
-                    max_tokens=6000,
-                    timeout=120.0,
-                    response_format={"type": "json_object"}
+                    max_tokens=6000
                 )
-
-                result_text = response.choices[0].message.content
-                if not result_text or not result_text.strip():
+                if not review_result:
                     continue
-
-                result_text = self._extract_json(result_text)
-                review_result = json.loads(result_text)
 
                 if not review_result.get("has_issues", False):
                     self._record_prompt(
                         prompt_type="review",
                         sys_prompt=system_prompt,
                         user_prompt=prompt,
-                        ai_response=result_text,
-                        model="deepseek-chat",
+                        ai_response=json.dumps(review_result, ensure_ascii=False),
+                        model=self._llm_client.model,
                         user_id=user_id,
                         novel_id=novel_id,
                     )
@@ -1394,20 +1393,17 @@ class DeepSeekClient:
                     prompt_type="review",
                     sys_prompt=system_prompt,
                     user_prompt=prompt,
-                    ai_response=result_text,
-                    model="deepseek-chat",
+                    ai_response=json.dumps(review_result, ensure_ascii=False),
+                    model=self._llm_client.model,
                     user_id=user_id,
                     novel_id=novel_id,
                 )
 
                 return {"fixed": True, "data": generated_data}
 
-            except json.JSONDecodeError as e:
-                print(f"审阅JSON解析失败: {e}，重试 {attempt + 1}/{max_retries}")
-                continue
             except Exception as e:
-                print(f"审阅失败: {e}")
-                break
+                print(f"审阅失败: {e}，重试 {attempt + 1}/{max_retries}")
+                continue
 
         return {"fixed": False, "data": generated_data}
 
@@ -1580,22 +1576,19 @@ class DeepSeekClient:
 
     def _self_eval_prompt(self, record_id, sys_prompt, user_prompt):
         """对已记录的 prompt 进行自我评估"""
-        if not self.client:
+        if not self.is_configured():
             return
         eval_prompt = PROMPT_SELF_EVAL_USER_TEMPLATE.format(
             system_prompt=sys_prompt, user_prompt=user_prompt
         )
         try:
-            response = self.client.chat.completions.create(
-                model="deepseek-chat",
-                messages=[
-                    {"role": "system", "content": PROMPT_SELF_EVAL_SYSTEM},
-                    {"role": "user", "content": eval_prompt}
-                ],
-                temperature=0.3, max_tokens=200, timeout=30.0
-            )
-            text = self._extract_json(response.choices[0].message.content)
-            eval_data = json.loads(text)
+            import asyncio
+            eval_data = asyncio.run(self._llm_client.chat_with_json_response(
+                messages=[{"role": "user", "content": eval_prompt}],
+                system_prompt=PROMPT_SELF_EVAL_SYSTEM,
+                temperature=0.3,
+                max_tokens=200
+            ))
             self.db.update_prompt_history_eval(record_id, json.dumps(eval_data, ensure_ascii=False))
             print(f"Self-eval 完成 (record {record_id}): score={eval_data.get('score')}")
         except Exception as e:
