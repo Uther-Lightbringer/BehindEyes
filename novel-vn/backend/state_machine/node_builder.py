@@ -63,7 +63,7 @@ PROMPT_TREE_BUILDING = """你是一个专业的游戏剧情设计师。请将以
   ]
 }}
 ```
-
+{context_section}
 ## 小说片段
 {content}
 
@@ -140,17 +140,29 @@ class NodeBuilder:
             player_character: 玩家角色信息
             all_characters: 所有角色列表
             parent_node_id: 父节点ID（用于连接）
-            context: 前文上下文
+            context: 前文上下文（累积的故事摘要、关键事件、角色状态）
 
         Returns:
             节点列表（只有树结构和预览，无完整场景）
         """
         char_names = [c.get("name", "") for c in all_characters]
 
+        # 构建上下文部分
+        if context:
+            context_section = f"""
+## 前文上下文
+{context}
+
+**注意：请确保新生成的节点与前文保持连贯性，角色的行为和对话要符合之前的设定。**
+"""
+        else:
+            context_section = ""
+
         prompt = PROMPT_TREE_BUILDING.format(
             content=content[:6000],
             player_character=f"{player_character['name']}: {player_character.get('personality', '未知')}",
-            characters=", ".join(char_names[:10])  # 限制角色数量
+            characters=", ".join(char_names[:10]),  # 限制角色数量
+            context_section=context_section
         )
 
         try:
@@ -196,7 +208,7 @@ class NodeBuilder:
         all_characters: List[Dict[str, Any]]
     ) -> List[Dict[str, Any]]:
         """
-        从多个片段构建完整的节点树
+        从多个片段构建完整的节点树（串行处理 + 累积上下文传递）
 
         Args:
             segments: 片段列表
@@ -207,44 +219,167 @@ class NodeBuilder:
         Returns:
             完整的节点树
         """
-        all_nodes = []
-        last_node_id = None
-        accumulated_context = ""
+        if not segments:
+            return []
 
-        for i, segment in enumerate(segments):
-            # 构建节点
+        all_nodes = []
+        cumulative_context = {
+            "story_summary": "",      # 故事整体摘要
+            "key_events": [],         # 关键事件列表
+            "character_states": {},   # 角色状态追踪
+        }
+        last_node_id = None
+
+        for idx, segment in enumerate(segments):
+            print(f"[NodeBuilder] Processing segment {idx + 1}/{len(segments)}")
+
+            # 构建传递给 AI 的上下文字符串
+            context_str = self._build_context_string(cumulative_context, idx)
+
+            # 生成节点（传入累积上下文）
             nodes = await self.build_tree_from_content(
                 content=segment["content"],
                 novel_id=novel_id,
                 player_character=player_character,
                 all_characters=all_characters,
                 parent_node_id=last_node_id,
-                context=accumulated_context
+                context=context_str
             )
 
-            if nodes:
-                # 连接到前一个节点
-                if last_node_id:
-                    prev_node = self._find_node_by_id(all_nodes, last_node_id)
-                    if prev_node and not prev_node.get("choices"):
-                        prev_node["choices"] = [{
-                            "choice_id": f"auto_choice_{uuid.uuid4().hex[:6]}",
-                            "prompt": "继续",
-                            "options": [{
-                                "text": "继续",
-                                "next_node": nodes[0]["node_id"],
-                                "route": "main",
-                                "effects": {}
-                            }]
-                        }]
+            if not nodes:
+                print(f"[NodeBuilder] Segment {idx} generated no nodes, skipping")
+                continue
 
-                all_nodes.extend(nodes)
-                last_node_id = nodes[-1]["node_id"]
+            # 连接到前一个片段
+            if last_node_id and nodes:
+                nodes[0]["parent_node"] = last_node_id
 
-                # 更新上下文
-                accumulated_context += "\n" + (nodes[-1].get("scene_preview", ""))
+                # 设置自动跳转：前一个片段的最后一个节点直接连接到当前片段的第一个节点
+                prev_node = self._find_node_by_id(all_nodes, last_node_id)
+                if prev_node:
+                    # 如果没有选择分支，设置自动跳转
+                    if not prev_node.get("choices"):
+                        prev_node["auto_next"] = nodes[0]["node_id"]
+
+            all_nodes.extend(nodes)
+            last_node_id = nodes[-1]["node_id"]
+
+            # 更新累积上下文（而不是只保存前一个摘要）
+            cumulative_context = self._update_cumulative_context(cumulative_context, nodes)
 
         return all_nodes
+
+    def _build_context_string(self, context: Dict[str, Any], current_segment_index: int) -> str:
+        """构建传递给 AI 的上下文字符串"""
+        parts = []
+
+        # 故事摘要
+        if context.get("story_summary"):
+            parts.append(f"【前文摘要】\n{context['story_summary']}")
+
+        # 关键事件（最多保留最近10个）
+        events = context.get("key_events", [])
+        if events:
+            recent_events = events[-10:]
+            events_str = "\n".join([f"- {e}" for e in recent_events])
+            parts.append(f"【已发生的关键事件】\n{events_str}")
+
+        # 角色状态变化
+        char_states = context.get("character_states", {})
+        if char_states:
+            states_list = []
+            for char_name, state in char_states.items():
+                if state:
+                    states_list.append(f"- {char_name}: {state}")
+            if states_list:
+                parts.append(f"【角色当前状态】\n" + "\n".join(states_list))
+
+        if not parts:
+            return ""
+
+        result = "\n\n".join(parts)
+        # 限制总长度，避免爆 token
+        if len(result) > 1500:
+            result = result[:1500] + "..."
+        return result
+
+    def _update_cumulative_context(
+        self,
+        context: Dict[str, Any],
+        new_nodes: List[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """更新累积上下文"""
+        # 1. 更新故事摘要
+        segment_summary = self._generate_segment_summary(new_nodes)
+        if context.get("story_summary"):
+            # 合并摘要，保留最近的内容
+            combined = context["story_summary"]
+            if len(combined) < 500:
+                combined = combined + " → " + segment_summary
+            else:
+                # 如果已经很长，截断旧内容，保留最近部分
+                combined = "... → " + combined[-300:] + " → " + segment_summary
+            context["story_summary"] = combined
+        else:
+            context["story_summary"] = segment_summary
+
+        # 2. 提取关键事件（从 choices 的 effects 中提取）
+        for node in new_nodes:
+            choices = node.get("choices", [])
+            for choice in choices:
+                for option in choice.get("options", []):
+                    effects = option.get("effects", {})
+                    # 提取设置标记
+                    set_flags = effects.get("set_flags", [])
+                    for flag in set_flags:
+                        if flag and flag not in context["key_events"]:
+                            context["key_events"].append(flag)
+
+        # 3. 更新角色状态（从 effects 中提取关系变化）
+        for node in new_nodes:
+            choices = node.get("choices", [])
+            for choice in choices:
+                for option in choice.get("options", []):
+                    effects = option.get("effects", {})
+                    rel_updates = effects.get("relationship_updates", {})
+                    for char_name, change in rel_updates.items():
+                        if char_name not in context["character_states"]:
+                            context["character_states"][char_name] = ""
+                        # 记录关系变化
+                        old_state = context["character_states"][char_name]
+                        if change > 0:
+                            new_state = f"好感度+{change}"
+                        elif change < 0:
+                            new_state = f"好感度{change}"
+                        else:
+                            continue
+                        if old_state:
+                            context["character_states"][char_name] = old_state + ", " + new_state
+                        else:
+                            context["character_states"][char_name] = new_state
+
+        # 限制角色状态数量，只保留最近变化的角色
+        if len(context["character_states"]) > 10:
+            # 保留最近的10个角色
+            keys = list(context["character_states"].keys())[-10:]
+            context["character_states"] = {k: context["character_states"][k] for k in keys}
+
+        return context
+
+    def _generate_segment_summary(self, nodes: List[Dict[str, Any]]) -> str:
+        """根据节点列表生成片段摘要"""
+        if not nodes:
+            return ""
+
+        summaries = []
+        for node in nodes:
+            preview = node.get("scene_preview", "") or node.get("generation_hint", "")
+            if preview:
+                summaries.append(preview)
+
+        if summaries:
+            return " → ".join(summaries[:5])  # 最多取5个节点的预览
+        return ""
 
     # ==================== 场景内容生成 ====================
 

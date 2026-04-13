@@ -782,6 +782,17 @@ async def get_novel(novel_id: str, request: Request):
     }
 
 
+@app.get("/api/novel/{novel_id}/events")
+async def get_novel_events(novel_id: str, request: Request):
+    """获取小说的所有事件"""
+    novel_db = db.get_novel(novel_id)
+    if not novel_db:
+        raise HTTPException(status_code=404, detail="小说不存在")
+
+    events = db.get_story_events_by_novel(novel_id)
+    return {"events": events, "count": len(events)}
+
+
 @app.get("/api/novel/{novel_id}/chapter/{chapter_index}")
 async def get_chapter(novel_id: str, chapter_index: int, request: Request):
     chapters = db.get_chapters_by_novel(novel_id)
@@ -1533,6 +1544,10 @@ async def _generate_tree_task(
         if not nodes:
             raise ValueError("生成节点树失败：AI 未返回有效节点")
 
+        # 删除旧节点（避免残留数据）
+        print(f"[TreeGen] Deleting old nodes for novel {novel_id}")
+        db.delete_story_nodes_by_novel(novel_id)
+
         # 存储节点（只有结构，scene_data 为空）
         for node in nodes:
             db.create_story_node(
@@ -1543,7 +1558,8 @@ async def _generate_tree_task(
                 parent_node=node.get("parent_node"),
                 scene_data=None,  # 待确认后生成
                 possible_events=node.get("possible_events", []),
-                choices=node.get("choices", []),  # 传递 List，不是 JSON 字符串
+                choices=node.get("choices", []),
+                auto_next=node.get("auto_next"),  # 自动跳转到下一个节点
                 prerequisites=node.get("prerequisites", {}),
                 needs_generation=True,
                 generation_hint=node.get("scene_preview", "")
@@ -1691,6 +1707,11 @@ async def _generate_all_scenes_task(task_id: str, novel_id: str, tree_data: Dict
 
     try:
         nodes = tree_data["nodes"]
+        print(f"[SceneGen] Total nodes to generate: {len(nodes)}")
+
+        # 调试：检查节点 ID
+        for i, node in enumerate(nodes):
+            print(f"[SceneGen] Node {i}: id={node.get('id')}, node_id={node.get('node_id')}, needs_gen={node.get('needs_generation')}")
         chapters = db.get_chapters_by_novel(novel_id)
         characters = db.get_characters_by_novel(novel_id)
 
@@ -1714,7 +1735,9 @@ async def _generate_all_scenes_task(task_id: str, novel_id: str, tree_data: Dict
                 )
 
                 # 更新节点
+                print(f"[SceneGen] Updating node {node.get('id')} with scene_id={scene.get('scene_id')}")
                 db.update_story_node_scene(node["id"], scene)
+                print(f"[SceneGen] Updated node {node.get('id')} successfully")
 
                 # 更新上下文
                 context = {
@@ -1813,6 +1836,7 @@ async def start_game_api(request: Request):
         raise HTTPException(status_code=404, detail="节点数据不存在，请先生成")
 
     start_node = nodes[0]
+    print(f"[GameStart] Found {len(nodes)} nodes, start_node id={start_node.get('id')}, scene_data={start_node.get('scene_data') is not None}")
 
     # 创建 GameState
     state = state_manager.create_state(
@@ -1873,6 +1897,66 @@ async def get_current_node_api(state_id: str, request: Request):
 class ChooseRequest(BaseModel):
     choice_id: str
     option_index: int
+
+
+class NavigateRequest(BaseModel):
+    node_id: str
+
+
+@app.post("/api/game/{state_id}/navigate")
+async def navigate_to_node_api(state_id: str, request: Request, body: NavigateRequest):
+    """
+    直接导航到指定节点（用于自动跳转）
+    """
+    user = await login_required(get_current_user(request))
+
+    state = state_manager.get_state(state_id)
+    if not state:
+        raise HTTPException(status_code=404, detail="游戏状态不存在")
+
+    if state.user_id != user["id"] and user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="无权操作")
+
+    try:
+        # 更新状态到新节点
+        state.current_node_id = body.node_id
+        state_manager.save_state(state)
+
+        # 获取新节点
+        next_node = db.get_story_node_by_node_id(state.novel_id, body.node_id)
+
+        # 如果节点需要生成内容（实时模式）
+        if next_node and next_node.get("needs_generation"):
+            characters = db.get_characters_by_novel(state.novel_id)
+            player_char = next((c for c in characters if c["id"] == state.character_id), None)
+
+            if player_char:
+                scene = await node_builder.generate_node_scene(
+                    node=next_node,
+                    player_character=player_char,
+                    context={"last_route": state.current_route}
+                )
+                db.update_story_node_scene(next_node["id"], scene)
+                next_node = db.get_story_node_by_node_id(state.novel_id, body.node_id)
+
+        choices = json.loads(next_node.get("choices", "[]")) if next_node and isinstance(next_node.get("choices"), str) else (next_node.get("choices", []) if next_node else [])
+
+        return {
+            "success": True,
+            "state": state.to_dict(),
+            "next_node": {
+                "node_id": next_node["node_id"],
+                "route": next_node.get("route", "main"),
+                "scene_data": json.loads(next_node["scene_data"]) if isinstance(next_node.get("scene_data"), str) else next_node.get("scene_data"),
+                "choices": choices,
+                "auto_next": next_node.get("auto_next")
+            } if next_node else None
+        }
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/api/game/{state_id}/choose")

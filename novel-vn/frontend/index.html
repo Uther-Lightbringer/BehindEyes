@@ -296,6 +296,10 @@
     <div class="char-select-screen" id="charSelectScreen">
         <h2 id="charSelectTitle">请选择你要扮演的角色</h2>
         <div class="chapter-tabs" id="chapterTabs"></div>
+        <!-- 事件查看按钮 -->
+        <div style="margin: 15px 0; text-align: center;">
+            <button class="nav-link" onclick="showEventsModal()" style="font-size:14px;background:#0f3460;">📋 查看剧情事件</button>
+        </div>
         <!-- v0.2 新增：生成模式选择 -->
         <div class="form-group" style="margin: 15px 0; padding: 15px; background: #0f3460; border-radius: 8px;">
             <label style="display: block; margin-bottom: 10px; font-size: 14px; color: #e94560;">生成模式</label>
@@ -307,11 +311,34 @@
                 预生成模式会在开始前生成所有分支路线图，实时模式则边玩边生成
             </small>
         </div>
+        <!-- 场景图片生成选项 -->
+        <div class="form-group" style="margin: 15px 0; padding: 15px; background: #0f3460; border-radius: 8px;">
+            <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
+                <input type="checkbox" id="generateSceneImages" style="width: 18px; height: 18px;">
+                <span>生成场景背景图片</span>
+            </label>
+            <small style="color: #666; display: block; margin-top: 6px;">
+                勾选后会在游玩时为每个场景生成背景图。不勾选可加快测试速度。
+            </small>
+        </div>
         <div class="select-hint" id="selectHint">选择一个角色后点击"开始游戏"</div>
         <div class="char-grid" id="charGrid"></div>
         <div style="text-align: center;">
             <button class="btn btn-primary" id="playBtn" onclick="startPlay()" disabled>开始游戏</button>
             <button class="btn btn-secondary" onclick="goBackUpload()">重新上传</button>
+        </div>
+    </div>
+
+    <!-- 事件列表模态框 -->
+    <div class="route-map-modal" id="eventsModal">
+        <div class="route-map-content" style="max-width:700px;max-height:80vh;">
+            <div class="route-map-header">
+                <h3>剧情事件列表</h3>
+                <button class="close-btn" onclick="closeEventsModal()">&times;</button>
+            </div>
+            <div style="padding:20px;max-height:60vh;overflow-y:auto;" id="eventsModalBody">
+                <div style="text-align:center;color:#888;">加载中...</div>
+            </div>
         </div>
     </div>
 
@@ -416,12 +443,18 @@
         <div class="route-map-content" style="max-width:900px;max-height:85vh;">
             <div class="route-map-header">
                 <h3>剧情分支预览</h3>
+                <div style="display:flex;align-items:center;gap:10px;">
+                    <button onclick="zoomTreePreview(-0.2)" style="background:#0f3460;border:none;color:#fff;padding:5px 12px;border-radius:5px;cursor:pointer;">−</button>
+                    <span id="treeZoomLevel" style="color:#888;font-size:12px;">100%</span>
+                    <button onclick="zoomTreePreview(0.2)" style="background:#0f3460;border:none;color:#fff;padding:5px 12px;border-radius:5px;cursor:pointer;">+</button>
+                    <button onclick="resetTreeZoom()" style="background:#0f3460;border:none;color:#888;padding:5px 12px;border-radius:5px;cursor:pointer;margin-left:5px;">重置</button>
+                </div>
                 <button class="close-btn" onclick="rejectTree()">&times;</button>
             </div>
             <div style="padding:15px;color:#888;font-size:13px;text-align:center;background:#0f3460;">
-                以下是 AI 生成的剧情分支结构预览。确认后将生成详细的场景内容。
+                以下是 AI 生成的剧情分支结构预览。确认后将生成详细的场景内容。可滚轮缩放，拖拽移动。
             </div>
-            <div class="route-map-body" id="treePreviewBody" style="height:400px;"></div>
+            <div class="route-map-body" id="treePreviewBody" style="height:400px;overflow:hidden;cursor:grab;"></div>
             <div style="display:flex;gap:12px;justify-content:center;padding:20px;">
                 <button class="btn btn-primary" id="confirmTreeBtn" onclick="confirmTree()">确认并生成场景</button>
                 <button class="btn btn-secondary" onclick="rejectTree()">重新生成</button>
@@ -893,6 +926,59 @@
             if (confirm('确定要重新上传吗？')) location.reload();
         }
 
+        // ===== 事件列表模态框 =====
+        async function showEventsModal() {
+            document.getElementById('eventsModal').classList.add('active');
+            const body = document.getElementById('eventsModalBody');
+
+            try {
+                const response = await fetch(`${API_BASE}/novel/${game.novelId}/events`, { credentials: 'include' });
+                const data = await response.json();
+
+                if (!data.events || data.events.length === 0) {
+                    body.innerHTML = '<div style="text-align:center;color:#888;padding:40px;">暂无事件数据<br><small>事件将在解析时自动提取</small></div>';
+                    return;
+                }
+
+                body.innerHTML = data.events.map(event => {
+                    const conditions = event.trigger_conditions || {};
+                    const effects = event.effects || {};
+
+                    const requiredFlags = (conditions.required_flags || []).join(', ') || '无';
+                    const forbiddenFlags = (conditions.forbidden_flags || []).join(', ') || '无';
+                    const setFlags = (effects.set_flags || []).join(', ') || '无';
+
+                    return `
+                        <div style="background:#0f3460;border-radius:8px;padding:15px;margin-bottom:12px;border-left:3px solid #e94560;">
+                            <div style="font-size:16px;font-weight:bold;color:#fff;margin-bottom:8px;">${event.name || '未命名事件'}</div>
+                            <div style="font-size:13px;color:#888;margin-bottom:10px;">${event.description || '无描述'}</div>
+                            <div style="display:flex;gap:20px;flex-wrap:wrap;font-size:12px;">
+                                <div><span style="color:#50c878;">触发条件:</span> <span style="color:#aaa;">${requiredFlags}</span></div>
+                                <div><span style="color:#e94560;">禁止条件:</span> <span style="color:#aaa;">${forbiddenFlags}</span></div>
+                                <div><span style="color:#4a90d9;">设置标记:</span> <span style="color:#aaa;">${setFlags}</span></div>
+                            </div>
+                            ${Object.keys(effects.character_updates || {}).length > 0 ? `
+                                <div style="margin-top:8px;font-size:12px;color:#888;">
+                                    <span style="color:#ffd700;">角色更新:</span>
+                                    ${Object.entries(effects.character_updates).map(([char, updates]) =>
+                                        `${char}: ${JSON.stringify(updates)}`
+                                    ).join('; ')}
+                                </div>
+                            ` : ''}
+                        </div>
+                    `;
+                }).join('');
+
+            } catch (err) {
+                console.error('Load events error:', err);
+                body.innerHTML = '<div style="text-align:center;color:#e94560;padding:40px;">加载事件失败</div>';
+            }
+        }
+
+        function closeEventsModal() {
+            document.getElementById('eventsModal').classList.remove('active');
+        }
+
         function hideAllScreens() {
             document.getElementById('homeScreen').style.display = 'none';
             document.getElementById('uploadScreen').style.display = 'none';
@@ -978,25 +1064,119 @@
         }
 
         // 显示树预览
+        let treePreviewScale = 1;
+        let treePreviewPanX = 0;
+        let treePreviewPanY = 0;
+        let treePreviewDragging = false;
+        let treePreviewLastX = 0;
+        let treePreviewLastY = 0;
+        let treePreviewSVGContent = '';
+
         function showTreePreview(treeData, nodeCount) {
             const body = document.getElementById('treePreviewBody');
 
+            // 重置缩放和平移
+            treePreviewScale = 1;
+            treePreviewPanX = 0;
+            treePreviewPanY = 0;
+            updateTreeZoomDisplay();
+
             if (!treeData || !treeData.root) {
                 body.innerHTML = '<div style="text-align:center;color:#888;padding:40px;">树结构为空</div>';
+                treePreviewSVGContent = '';
             } else {
-                body.innerHTML = buildTreePreviewSVG(treeData);
+                treePreviewSVGContent = buildTreePreviewSVG(treeData);
+                renderTreePreview();
+                setupTreePreviewEvents(body);
             }
 
             document.getElementById('treePreviewModal').classList.add('active');
         }
 
+        function renderTreePreview() {
+            const body = document.getElementById('treePreviewBody');
+            if (!treePreviewSVGContent) return;
+
+            const transform = `transform: translate(${treePreviewPanX}px, ${treePreviewPanY}px) scale(${treePreviewScale}); transform-origin: center center;`;
+            body.innerHTML = `<div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;">
+                <div style="${transform} transition: transform 0.1s ease;">${treePreviewSVGContent}</div>
+            </div>`;
+        }
+
+        function setupTreePreviewEvents(body) {
+            // 滚轮缩放
+            body.onwheel = function(e) {
+                e.preventDefault();
+                const delta = e.deltaY > 0 ? -0.1 : 0.1;
+                treePreviewScale = Math.max(0.3, Math.min(2, treePreviewScale + delta));
+                updateTreeZoomDisplay();
+                renderTreePreview();
+            };
+
+            // 拖拽移动
+            body.onmousedown = function(e) {
+                if (e.button !== 0) return;
+                treePreviewDragging = true;
+                treePreviewLastX = e.clientX;
+                treePreviewLastY = e.clientY;
+                body.style.cursor = 'grabbing';
+            };
+
+            document.onmousemove = function(e) {
+                if (!treePreviewDragging) return;
+                const dx = e.clientX - treePreviewLastX;
+                const dy = e.clientY - treePreviewLastY;
+                treePreviewPanX += dx;
+                treePreviewPanY += dy;
+                treePreviewLastX = e.clientX;
+                treePreviewLastY = e.clientY;
+                renderTreePreview();
+            };
+
+            document.onmouseup = function() {
+                treePreviewDragging = false;
+                body.style.cursor = 'grab';
+            };
+        }
+
+        function zoomTreePreview(delta) {
+            treePreviewScale = Math.max(0.3, Math.min(2, treePreviewScale + delta));
+            updateTreeZoomDisplay();
+            renderTreePreview();
+        }
+
+        function resetTreeZoom() {
+            treePreviewScale = 1;
+            treePreviewPanX = 0;
+            treePreviewPanY = 0;
+            updateTreeZoomDisplay();
+            renderTreePreview();
+        }
+
+        function updateTreeZoomDisplay() {
+            const el = document.getElementById('treeZoomLevel');
+            if (el) el.textContent = Math.round(treePreviewScale * 100) + '%';
+        }
+
+        // 从预览文本生成简短的节点名称
+        function getShortNodeName(preview, node_id) {
+            if (!preview) {
+                // 从 node_id 提取数字
+                const match = node_id?.match(/\d+/);
+                return match ? `场景${match[0]}` : '场景';
+            }
+            // 取前6个字符作为简短名称
+            const short = preview.replace(/[，。！？、；：""''（）【】]/g, '').substring(0, 6);
+            return short || '场景';
+        }
+
         // 构建 SVG 树预览
         function buildTreePreviewSVG(treeData) {
-            const nodeWidth = 180;
-            const nodeHeight = 70;
-            const hGap = 40;
-            const vGap = 100;
-            const padding = 60;
+            const nodeWidth = 140;
+            const nodeHeight = 60;
+            const hGap = 30;
+            const vGap = 80;
+            const padding = 50;
 
             // 计算树的布局
             const positions = [];
@@ -1029,7 +1209,7 @@
             const svgWidth = maxX + padding;
             const svgHeight = maxY + padding;
 
-            let svg = `<svg width="${svgWidth}" height="${svgHeight}" xmlns="http://www.w3.org/2000/svg">`;
+            let svg = `<svg width="${svgWidth}" height="${svgHeight}" xmlns="http://www.w3.org/2000/svg" style="min-width:${svgWidth}px;min-height:${svgHeight}px;">`;
             svg += `<defs>
                 <marker id="treeArrow" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
                     <polygon points="0 0, 10 3.5, 0 7" fill="#666"/>
@@ -1049,12 +1229,16 @@
 
                 // 绘制节点
                 svg += `<rect x="${x}" y="${y}" width="${nodeWidth}" height="${nodeHeight}"
-                        rx="10" fill="url(#nodeGradient)" stroke="#e94560" stroke-width="2"/>`;
+                        rx="8" fill="url(#nodeGradient)" stroke="#e94560" stroke-width="2"/>`;
 
+                // 使用简短名称
+                const shortName = getShortNodeName(node.preview, node.node_id);
+                svg += `<text x="${x + nodeWidth/2}" y="${y + 22}" text-anchor="middle" fill="#fff" font-size="13" font-weight="bold">${shortName}</text>`;
+
+                // 预览文本（最多15字）
                 const preview = node.preview || '';
-                const previewText = preview.length > 20 ? preview.substring(0, 20) + '...' : preview;
-                svg += `<text x="${x + nodeWidth/2}" y="${y + 25}" text-anchor="middle" fill="#fff" font-size="12" font-weight="bold">${node.node_id || '节点'}</text>`;
-                svg += `<text x="${x + nodeWidth/2}" y="${y + 50}" text-anchor="middle" fill="#aaa" font-size="10">${previewText}</text>`;
+                const previewText = preview.length > 15 ? preview.substring(0, 15) + '...' : preview;
+                svg += `<text x="${x + nodeWidth/2}" y="${y + 42}" text-anchor="middle" fill="#aaa" font-size="9">${previewText}</text>`;
 
                 // 绘制子节点连线
                 const choices = node.choices || [];
@@ -1072,11 +1256,11 @@
                                         stroke="#555" stroke-width="2" fill="none" marker-end="url(#treeArrow)"/>`;
 
                                 // 绘制选项标签
-                                const labelText = opt.text?.substring(0, 10) || '选项';
+                                const labelText = opt.text?.substring(0, 8) || '选项';
                                 const labelX = (x1 + x2) / 2;
-                                const labelY = (y1 + y2) / 2 - 10;
-                                svg += `<rect x="${labelX - 40}" y="${labelY - 10}" width="80" height="20" rx="10" fill="#e94560"/>`;
-                                svg += `<text x="${labelX}" y="${labelY + 4}" text-anchor="middle" fill="white" font-size="10">${labelText}</text>`;
+                                const labelY = (y1 + y2) / 2 - 8;
+                                svg += `<rect x="${labelX - 32}" y="${labelY - 8}" width="64" height="16" rx="8" fill="#e94560"/>`;
+                                svg += `<text x="${labelX}" y="${labelY + 4}" text-anchor="middle" fill="white" font-size="9">${labelText}</text>`;
                             }
                             childIndex++;
                         }
@@ -1427,6 +1611,20 @@
             const novelId = game.novelId;
             if (!novelId) return;
 
+            // 检查是否启用了场景图片生成
+            const generateImages = document.getElementById('generateSceneImages')?.checked;
+            if (!generateImages) {
+                // 未勾选，使用默认背景
+                bgEl.style.backgroundImage = '';
+                bgEl.classList.add('default');
+                return;
+            }
+
+            // 确保 backgroundCache 已初始化
+            if (!game.backgroundCache) {
+                game.backgroundCache = {};
+            }
+
             // 如果该地点已经有背景图，直接使用
             if (game.backgroundCache[location]?.url) {
                 bgEl.style.backgroundImage = `url(${game.backgroundCache[location].url})`;
@@ -1468,6 +1666,13 @@
 
             const dialogues = scene.dialogues || [];
             if (game.currentDialogue >= dialogues.length) {
+                // 检查是否有自动跳转 (auto_next)
+                if (gameStateId && game.currentNode && game.currentNode.auto_next) {
+                    // 自动跳转到下一个节点，无需玩家点击
+                    navigateToNode(game.currentNode.auto_next);
+                    return;
+                }
+
                 // 查找当前场景的 choices
                 // V2 模式：choices 通过 at_scene 关联
                 // V1 模式：同样通过 at_scene 关联
@@ -1671,6 +1876,66 @@
             } catch (err) {
                 console.error('Make choice v2 error:', err);
                 alert('选择处理失败: ' + err.message);
+            }
+        }
+
+        // v0.2: 自动导航到指定节点（无需玩家点击）
+        async function navigateToNode(nodeId) {
+            if (!gameStateId || !nodeId) {
+                showChapterEnd();
+                return;
+            }
+
+            try {
+                const res = await fetch(`${API_BASE}/game/${gameStateId}/navigate`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include',
+                    body: JSON.stringify({ node_id: nodeId })
+                });
+
+                if (!res.ok) throw new Error('导航失败');
+
+                const data = await res.json();
+
+                // 更新本地状态
+                game.route = data.state?.current_route || game.route;
+                game.flags = data.state?.flags || {};
+
+                // 更新当前节点
+                if (data.next_node) {
+                    game.currentNode = data.next_node;
+
+                    // 更新场景数据
+                    if (data.next_node.scene_data) {
+                        // 添加新场景到数组
+                        game.scenes.push(data.next_node.scene_data);
+                        game.currentScene = game.scenes.length - 1;
+                        game.currentDialogue = 0;
+
+                        // 更新对话总数
+                        game.totalDialogues += (data.next_node.scene_data.dialogues || []).length;
+                    }
+
+                    // 更新 choices（转换格式）
+                    game.choices = convertChoicesFormat(data.next_node.choices || [], game.currentScene);
+                }
+
+                game.isWaiting = true;
+
+                // 显示场景过渡动画（短暂一点，因为是自动跳转）
+                const transition = document.getElementById('sceneTransition');
+                transition.classList.add('active');
+
+                setTimeout(() => {
+                    renderCharacters();
+                    showCurrentDialogue();
+                    setTimeout(() => transition.classList.remove('active'), 200);
+                }, 300);
+
+            } catch (err) {
+                console.error('Navigate to node error:', err);
+                showChapterEnd();
             }
         }
 

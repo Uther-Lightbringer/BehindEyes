@@ -193,6 +193,7 @@ CREATE TABLE IF NOT EXISTS story_nodes (
     scene_data TEXT,
     possible_events TEXT DEFAULT '[]',
     choices TEXT DEFAULT '[]',
+    auto_next TEXT,
     prerequisites TEXT DEFAULT '{}',
     needs_generation INTEGER DEFAULT 0,
     generation_hint TEXT,
@@ -313,6 +314,11 @@ class Database:
                 conn.execute(f"ALTER TABLE novels ADD COLUMN {col[0]} {col[1]}")
             except sqlite3.OperationalError:
                 pass
+        # story_nodes 表 - v0.2 新增字段
+        try:
+            conn.execute("ALTER TABLE story_nodes ADD COLUMN auto_next TEXT")
+        except sqlite3.OperationalError:
+            pass
         conn.commit()
         conn.close()
 
@@ -1066,19 +1072,21 @@ class Database:
     def create_story_node(self, node_pk: str, novel_id: str, node_id: str,
                           route: str = "main", parent_node: str = None,
                           scene_data: Dict = None, possible_events: List = None,
-                          choices: List = None, prerequisites: Dict = None,
-                          needs_generation: bool = False, generation_hint: str = "") -> None:
+                          choices: List = None, auto_next: str = None,
+                          prerequisites: Dict = None, needs_generation: bool = False,
+                          generation_hint: str = "") -> None:
         """创建剧情节点"""
         conn = self._get_conn()
         conn.execute(
             """INSERT OR REPLACE INTO story_nodes
                (id, novel_id, node_id, route, parent_node, scene_data, possible_events,
-                choices, prerequisites, needs_generation, generation_hint)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                choices, auto_next, prerequisites, needs_generation, generation_hint)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (node_pk, novel_id, node_id, route, parent_node,
              json.dumps(scene_data, ensure_ascii=False) if scene_data else None,
              json.dumps(possible_events or [], ensure_ascii=False),
              json.dumps(choices or [], ensure_ascii=False),
+             auto_next,
              json.dumps(prerequisites or {}, ensure_ascii=False),
              1 if needs_generation else 0, generation_hint),
         )
