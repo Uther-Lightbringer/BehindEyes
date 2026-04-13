@@ -28,13 +28,27 @@ PROMPT_CHARACTER_CARD_USER_TEMPLATE = """分析以下小说章节，提取所有
 - personality: 性格特征描述（20字内）
 - speaking_style: 说话风格描述（20字内）
 - is_playable: 是否可扮演（重要角色为true，配角/NPC为false）
-- relations: 与其他角色的关系 {{"角色名": "关系描述"}} 的字典
+- relations: 与其他角色的关系列表，每个关系包含:
+  - target: 目标角色名
+  - type: 关系类型（师徒/父子/兄弟/姐妹/夫妻/朋友/敌对/主仆/陌生人/恋人）
+  - base_affection: 初始好感度（-100到100，0为陌生人，正数为友好，负数为敌对）
+  - description: 关系描述（10字内）
+
+relations 示例:
+```json
+"relations": [
+  {{"target": "唐僧", "type": "师徒", "base_affection": 80, "description": "师傅"}},
+  {{"target": "猪八戒", "type": "兄弟", "base_affection": 60, "description": "师弟"}},
+  {{"target": "牛魔王", "type": "敌对", "base_affection": -30, "description": "昔日兄弟"}}
+]
+```
 
 请确保:
 1. 主角和重要配角 is_playable 设为 true
 2. 只出现1-2次的路人等 is_playable 设为 false
 3. speaking_style要能指导后续对话生成
 4. appearance 和 clothing 尽量从原文提取真实描写，如无则合理推测
+5. relations 要根据原文中的互动关系推断，如无明确互动可设为空数组
 
 章节内容:
 {content}
@@ -459,7 +473,7 @@ class DeepSeekClient:
                     "personality": "",
                     "speaking_style": "",
                     "is_playable": len(characters) < 3,
-                    "relations": {}
+                    "relations": []  # 列表格式
                 })
         return characters
 
@@ -519,12 +533,23 @@ class DeepSeekClient:
                         existing_aliases.update(char.get("aliases", []))
                         existing["aliases"] = list(existing_aliases)
 
-                    # 合并 relations
+                    # 合并 relations（列表格式，按 target 去重）
                     if char.get("relations"):
-                        existing_r = existing.get("relations", {})
-                        new_r = char.get("relations", {})
-                        existing_r.update(new_r)
-                        existing["relations"] = existing_r
+                        existing_r = existing.get("relations", [])
+                        new_r = char.get("relations", [])
+                        # 按 target 去重，保留更详细的关系信息
+                        existing_targets = {r.get("target"): r for r in existing_r if r.get("target")}
+                        for r in new_r:
+                            target = r.get("target")
+                            if target and target not in existing_targets:
+                                existing_targets[target] = r
+                            elif target:
+                                # 合并信息，优先保留非空值
+                                existing_rel = existing_targets[target]
+                                for key in ["type", "base_affection", "description"]:
+                                    if r.get(key) and not existing_rel.get(key):
+                                        existing_rel[key] = r.get(key)
+                        existing["relations"] = list(existing_targets.values())
 
                     # 保持 is_playable 为 True 如果任意片段为 True
                     if char.get("is_playable"):

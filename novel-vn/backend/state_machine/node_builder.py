@@ -223,10 +223,19 @@ class NodeBuilder:
             return []
 
         all_nodes = []
+
+        # 构建角色关系映射（从角色卡中提取）
+        character_relations = {}
+        for char in all_characters:
+            relations = char.get("relations", [])
+            if relations:
+                character_relations[char["name"]] = relations
+
         cumulative_context = {
-            "story_summary": "",      # 故事整体摘要
-            "key_events": [],         # 关键事件列表
-            "character_states": {},   # 角色状态追踪
+            "story_summary": "",           # 故事整体摘要
+            "key_events": [],              # 关键事件列表
+            "character_states": {},        # 角色状态追踪
+            "initial_relations": character_relations,  # 初始角色关系
         }
         last_node_id = None
 
@@ -272,6 +281,22 @@ class NodeBuilder:
     def _build_context_string(self, context: Dict[str, Any], current_segment_index: int) -> str:
         """构建传递给 AI 的上下文字符串"""
         parts = []
+
+        # 初始角色关系（第一个片段时显示）
+        if current_segment_index == 0:
+            initial_relations = context.get("initial_relations", {})
+            if initial_relations:
+                rel_lines = []
+                for char_name, relations in initial_relations.items():
+                    for rel in relations:
+                        target = rel.get("target", "")
+                        rel_type = rel.get("type", "")
+                        desc = rel.get("description", "")
+                        affection = rel.get("base_affection", 0)
+                        if target and rel_type:
+                            rel_lines.append(f"- {char_name} → {target}: {rel_type}（{desc}，好感度:{affection}）")
+                if rel_lines:
+                    parts.append(f"【角色初始关系】\n" + "\n".join(rel_lines[:15]))
 
         # 故事摘要
         if context.get("story_summary"):

@@ -47,6 +47,31 @@ class CharacterState:
 
 
 @dataclass
+class RelationshipState:
+    """角色间的关系状态"""
+    affection: int = 0  # 好感度 (-100 到 100)
+    flags: List[str] = field(default_factory=list)  # 状态标记（信任、敌对、结盟等）
+    changes: List[str] = field(default_factory=list)  # 关系变化历史
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "affection": self.affection,
+            "flags": self.flags,
+            "changes": self.changes
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "RelationshipState":
+        if isinstance(data, cls):
+            return data
+        return cls(
+            affection=data.get("affection", 0),
+            flags=data.get("flags", []),
+            changes=data.get("changes", [])
+        )
+
+
+@dataclass
 class GlobalState:
     """全局状态"""
     current_time: str = ""
@@ -112,8 +137,15 @@ class GameState:
     visited_nodes: List[str] = field(default_factory=list)
     choice_history: List[ChoiceRecord] = field(default_factory=list)
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    # 动态关系存储：{角色名: {目标角色名: RelationshipState}}
+    relationships: Dict[str, Dict[str, RelationshipState]] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
+        relationships_dict = {}
+        for char_name, targets in self.relationships.items():
+            relationships_dict[char_name] = {
+                target: rel.to_dict() for target, rel in targets.items()
+            }
         return {
             "id": self.id,
             "novel_id": self.novel_id,
@@ -125,7 +157,8 @@ class GameState:
             "current_route": self.current_route,
             "current_node_id": self.current_node_id,
             "visited_nodes": self.visited_nodes,
-            "choice_history": [c.to_dict() for c in self.choice_history]
+            "choice_history": [c.to_dict() for c in self.choice_history],
+            "relationships": relationships_dict
         }
 
     @classmethod
@@ -138,6 +171,13 @@ class GameState:
         for c in data.get("choice_history", []):
             choice_history.append(ChoiceRecord.from_dict(c))
 
+        # 解析 relationships
+        relationships = {}
+        for char_name, targets in data.get("relationships", {}).items():
+            relationships[char_name] = {}
+            for target, rel_data in targets.items():
+                relationships[char_name][target] = RelationshipState.from_dict(rel_data)
+
         return cls(
             id=data.get("id", str(uuid.uuid4())),
             novel_id=data["novel_id"],
@@ -149,7 +189,8 @@ class GameState:
             current_route=data.get("current_route", "main"),
             current_node_id=data.get("current_node_id", "start"),
             visited_nodes=data.get("visited_nodes", []),
-            choice_history=choice_history
+            choice_history=choice_history,
+            relationships=relationships
         )
 
 
@@ -189,6 +230,8 @@ class EventEffects:
     character_updates: Dict[str, Dict] = field(default_factory=dict)
     global_updates: Dict[str, Any] = field(default_factory=dict)
     unlock_events: List[str] = field(default_factory=list)
+    # 关系变化：{角色名: {目标角色名: 好感度变化}}
+    relationship_updates: Dict[str, Dict[str, int]] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -196,7 +239,8 @@ class EventEffects:
             "clear_flags": self.clear_flags,
             "character_updates": self.character_updates,
             "global_updates": self.global_updates,
-            "unlock_events": self.unlock_events
+            "unlock_events": self.unlock_events,
+            "relationship_updates": self.relationship_updates
         }
 
     @classmethod
@@ -208,7 +252,8 @@ class EventEffects:
             clear_flags=data.get("clear_flags", []),
             character_updates=data.get("character_updates", {}),
             global_updates=data.get("global_updates", {}),
-            unlock_events=data.get("unlock_events", [])
+            unlock_events=data.get("unlock_events", []),
+            relationship_updates=data.get("relationship_updates", {})
         )
 
 
@@ -376,6 +421,10 @@ class GameStateManager:
             current_node_id=initial_node,
             visited_nodes=[initial_node]
         )
+
+        # 从角色卡初始化关系
+        self._init_relationships_from_characters(state, novel_id)
+
         # 保存到数据库
         db.create_game_state(
             state_id=state.id,
@@ -389,6 +438,80 @@ class GameStateManager:
             choice_history=[]
         )
         return state
+
+    def _init_relationships_from_characters(self, state: GameState, novel_id: str) -> None:
+        """从角色卡初始化关系"""
+        characters = db.get_characters_by_novel(novel_id)
+        for char in characters:
+            char_name = char.get("name", "")
+            relations = char.get("relations", [])
+            if relations:
+                if char_name not in state.relationships:
+                    state.relationships[char_name] = {}
+                for rel in relations:
+                    target = rel.get("target", "")
+                    base_affection = rel.get("base_affection", 0)
+                    rel_type = rel.get("type", "")
+                    if target:
+                        state.relationships[char_name][target] = RelationshipState(
+                            affection=base_affection,
+                            flags=[rel_type] if rel_type else [],
+                            changes=[f"初始关系: {rel_type}"]
+                        )
+
+    def update_relationship(self, state: GameState, char_name: str, target_name: str,
+                           affection_change: int, reason: str = "") -> None:
+        """更新角色间的关系
+
+        Args:
+            state: 游戏状态
+            char_name: 角色名
+            target_name: 目标角色名
+            affection_change: 好感度变化值
+            reason: 变化原因
+        """
+        if char_name not in state.relationships:
+            state.relationships[char_name] = {}
+        if target_name not in state.relationships[char_name]:
+            state.relationships[char_name][target_name] = RelationshipState()
+
+        rel = state.relationships[char_name][target_name]
+        rel.affection = max(-100, min(100, rel.affection + affection_change))
+
+        # 记录变化原因
+        change_desc = f"{'+' if affection_change > 0 else ''}{affection_change}"
+        if reason:
+            change_desc += f" ({reason})"
+        rel.changes.append(change_desc)
+
+        # 根据好感度更新状态标记
+        self._update_relationship_flags(rel)
+
+    def _update_relationship_flags(self, rel: RelationshipState) -> None:
+        """根据好感度更新关系状态标记"""
+        # 清除旧的好感度相关标记
+        affection_flags = ["敌对", "厌恶", "陌生", "友好", "信任", "亲密"]
+        rel.flags = [f for f in rel.flags if f not in affection_flags]
+
+        # 根据好感度添加新标记
+        if rel.affection <= -50:
+            rel.flags.append("敌对")
+        elif rel.affection <= -20:
+            rel.flags.append("厌恶")
+        elif rel.affection < 20:
+            rel.flags.append("陌生")
+        elif rel.affection < 50:
+            rel.flags.append("友好")
+        elif rel.affection < 80:
+            rel.flags.append("信任")
+        else:
+            rel.flags.append("亲密")
+
+    def get_relationship(self, state: GameState, char_name: str, target_name: str) -> RelationshipState:
+        """获取两个角色间的关系状态"""
+        if char_name in state.relationships and target_name in state.relationships[char_name]:
+            return state.relationships[char_name][target_name]
+        return RelationshipState()
 
     def get_state(self, state_id: str) -> Optional[GameState]:
         """获取游戏状态"""
@@ -408,8 +531,14 @@ class GameStateManager:
             choice_history=[c.to_dict() for c in state.choice_history]
         )
 
-    def apply_effects(self, state: GameState, effects: EventEffects) -> GameState:
-        """应用事件/选择效果"""
+    def apply_effects(self, state: GameState, effects: EventEffects, player_char_name: str = "") -> GameState:
+        """应用事件/选择效果
+
+        Args:
+            state: 游戏状态
+            effects: 效果对象
+            player_char_name: 玩家角色名（用于关系更新）
+        """
         # 设置标记
         for flag in effects.set_flags:
             state.flags.add(flag)
@@ -435,6 +564,15 @@ class GameStateManager:
                 setattr(state.global_state, key, value)
             else:
                 state.global_state.custom_attrs[key] = value
+
+        # 更新关系
+        if effects.relationship_updates:
+            for char_name, targets in effects.relationship_updates.items():
+                for target_name, affection_change in targets.items():
+                    self.update_relationship(
+                        state, char_name, target_name, affection_change,
+                        reason=f"玩家选择"
+                    )
 
         return state
 
@@ -619,9 +757,17 @@ class NodeNavigator:
                 set_flags=effects.get("set_flags", []),
                 clear_flags=effects.get("clear_flags", []),
                 character_updates=effects.get("character_updates", {}),
-                global_updates=effects.get("global_updates", {})
+                global_updates=effects.get("global_updates", {}),
+                relationship_updates=effects.get("relationship_updates", {})
             )
-            self.state_manager.apply_effects(state, event_effects)
+            # 获取玩家角色名用于关系更新
+            player_char_name = ""
+            characters = db.get_characters_by_novel(state.novel_id)
+            for c in characters:
+                if c["id"] == state.character_id:
+                    player_char_name = c.get("name", "")
+                    break
+            self.state_manager.apply_effects(state, event_effects, player_char_name)
 
         # 更新路线
         if option.get("route"):

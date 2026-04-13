@@ -2014,6 +2014,44 @@ async def make_choice_api(state_id: str, request: Request, body: ChooseRequest):
         raise HTTPException(status_code=400, detail=str(e))
 
 
+@app.get("/api/game/{state_id}/relationships")
+async def get_relationships_api(state_id: str, request: Request):
+    """获取游戏中的角色关系状态"""
+    user = await login_required(get_current_user(request))
+
+    state = state_manager.get_state(state_id)
+    if not state:
+        raise HTTPException(status_code=404, detail="游戏状态不存在")
+
+    if state.user_id != user["id"] and user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="无权访问")
+
+    # 获取玩家角色名
+    player_char_name = ""
+    characters = db.get_characters_by_novel(state.novel_id)
+    for c in characters:
+        if c["id"] == state.character_id:
+            player_char_name = c.get("name", "")
+            break
+
+    # 构建关系数据
+    relationships = []
+    for char_name, targets in state.relationships.items():
+        for target_name, rel_state in targets.items():
+            relationships.append({
+                "from": char_name,
+                "to": target_name,
+                "affection": rel_state.affection,
+                "flags": rel_state.flags,
+                "changes": rel_state.changes[-5:] if rel_state.changes else []  # 最近5条变化
+            })
+
+    return {
+        "player_character": player_char_name,
+        "relationships": relationships
+    }
+
+
 # ==================== 存档 API ====================
 
 @app.post("/api/save")
