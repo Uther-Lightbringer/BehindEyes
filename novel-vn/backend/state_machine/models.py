@@ -48,14 +48,25 @@ class CharacterState:
 
 @dataclass
 class RelationshipState:
-    """角色间的关系状态"""
-    affection: int = 0  # 好感度 (-100 到 100)
+    """角色间的关系状态 - 支持双重好感度"""
+    apparent_affection: int = 0  # 表面好感度（玩家可见）
+    true_affection: int = 0     # 真实好感度（内心感受）
     flags: List[str] = field(default_factory=list)  # 状态标记（信任、敌对、结盟等）
     changes: List[str] = field(default_factory=list)  # 关系变化历史
 
+    # 兼容旧数据
+    affection: int = 0  # 已弃用，保留用于向后兼容
+
+    def __post_init__(self):
+        """初始化后处理：如果只设置了 affection，则同步到两个好感度"""
+        if self.affection != 0 and self.apparent_affection == 0 and self.true_affection == 0:
+            self.apparent_affection = self.affection
+            self.true_affection = self.affection
+
     def to_dict(self) -> Dict[str, Any]:
         return {
-            "affection": self.affection,
+            "apparent_affection": self.apparent_affection,
+            "true_affection": self.true_affection,
             "flags": self.flags,
             "changes": self.changes
         }
@@ -64,10 +75,16 @@ class RelationshipState:
     def from_dict(cls, data: Dict[str, Any]) -> "RelationshipState":
         if isinstance(data, cls):
             return data
+        # 兼容旧数据格式
+        old_affection = data.get("affection", 0)
+        apparent = data.get("apparent_affection", old_affection)
+        true = data.get("true_affection", old_affection)
         return cls(
-            affection=data.get("affection", 0),
+            apparent_affection=apparent,
+            true_affection=true,
             flags=data.get("flags", []),
-            changes=data.get("changes", [])
+            changes=data.get("changes", []),
+            affection=old_affection  # 保留用于兼容
         )
 
 
@@ -440,11 +457,19 @@ class GameStateManager:
         return state
 
     def _init_relationships_from_characters(self, state: GameState, novel_id: str) -> None:
-        """从角色卡初始化关系"""
+        """从角色卡初始化关系（支持双重好感度）"""
         characters = db.get_characters_by_novel(novel_id)
+
+        # 构建性格特质映射
+        traits_map = {}
+        for char in characters:
+            traits_map[char.get("name", "")] = char.get("personality_traits", [])
+
         for char in characters:
             char_name = char.get("name", "")
             relations = char.get("relations", [])
+            char_traits = char.get("personality_traits", [])
+
             if relations:
                 if char_name not in state.relationships:
                     state.relationships[char_name] = {}
@@ -453,15 +478,64 @@ class GameStateManager:
                     base_affection = rel.get("base_affection", 0)
                     rel_type = rel.get("type", "")
                     if target:
+                        # 计算初始的表面和真实好感度差异
+                        apparent = base_affection
+                        true = base_affection
+
+                        # 根据性格特质调整真实好感度
+                        if char_traits:
+                            true = self._calculate_initial_trait_difference(base_affection, char_traits)
+
                         state.relationships[char_name][target] = RelationshipState(
-                            affection=base_affection,
+                            apparent_affection=apparent,
+                            true_affection=true,
                             flags=[rel_type] if rel_type else [],
                             changes=[f"初始关系: {rel_type}"]
                         )
 
+    def _calculate_initial_trait_difference(self, base_affection: int, traits: List[str]) -> int:
+        """根据性格特质计算初始真实好感度与表面好感度的差异
+
+        Args:
+            base_affection: 基础好感度
+            traits: 角色的性格特质
+
+        Returns:
+            调整后的真实好感度
+        """
+        true_affection = base_affection
+
+        for trait in traits:
+            if trait == "直率":
+                # 表里如一
+                pass
+            elif trait == "内敛":
+                # 内心比表面冷淡（正向减少，负向增加）
+                if base_affection > 0:
+                    true_affection = max(0, base_affection - 15)
+                elif base_affection < 0:
+                    true_affection = min(0, base_affection + 10)  # 负向时内心没那么恨
+            elif trait == "虚伪":
+                # 正向关系内心可能更负面
+                if base_affection > 30:
+                    true_affection = base_affection - 20
+            elif trait == "多疑":
+                # 对所有人都保持警惕
+                true_affection = min(base_affection, base_affection - 10)
+            elif trait == "忠诚":
+                # 一旦建立关系就很稳定，初始不变
+                pass
+            elif trait == "热情":
+                # 表面热情，内心可能没那么热情
+                if base_affection > 20:
+                    true_affection = base_affection - 10
+
+        return true_affection
+
     def update_relationship(self, state: GameState, char_name: str, target_name: str,
-                           affection_change: int, reason: str = "") -> None:
-        """更新角色间的关系
+                           affection_change: int, reason: str = "",
+                           char_traits: List[str] = None) -> None:
+        """更新角色间的关系（支持双重好感度）
 
         Args:
             state: 游戏状态
@@ -469,6 +543,7 @@ class GameStateManager:
             target_name: 目标角色名
             affection_change: 好感度变化值
             reason: 变化原因
+            char_traits: 角色的性格特质（用于计算表里差异）
         """
         if char_name not in state.relationships:
             state.relationships[char_name] = {}
@@ -476,33 +551,108 @@ class GameStateManager:
             state.relationships[char_name][target_name] = RelationshipState()
 
         rel = state.relationships[char_name][target_name]
-        rel.affection = max(-100, min(100, rel.affection + affection_change))
+
+        # 计算性格差异（影响真实好感度的变化）
+        true_change = affection_change
+        if char_traits:
+            true_change = self._calculate_trait_adjustment(affection_change, char_traits)
+
+        # 更新表面好感度（玩家看到的变化）
+        rel.apparent_affection = max(-100, min(100, rel.apparent_affection + affection_change))
+
+        # 更新真实好感度（实际内心变化，可能因性格有差异）
+        rel.true_affection = max(-100, min(100, rel.true_affection + true_change))
 
         # 记录变化原因
-        change_desc = f"{'+' if affection_change > 0 else ''}{affection_change}"
+        change_desc = f"表面{'+' if affection_change > 0 else ''}{affection_change}"
+        if true_change != affection_change:
+            change_desc += f", 真实{'+' if true_change > 0 else ''}{true_change}"
         if reason:
             change_desc += f" ({reason})"
         rel.changes.append(change_desc)
 
-        # 根据好感度更新状态标记
+        # 根据表面好感度更新状态标记（玩家可见）
         self._update_relationship_flags(rel)
 
-    def _update_relationship_flags(self, rel: RelationshipState) -> None:
-        """根据好感度更新关系状态标记"""
+    def _calculate_trait_adjustment(self, affection_change: int, traits: List[str]) -> int:
+        """根据性格特质计算真实好感度变化
+
+        性格特质影响：
+        - 直率：表里如一，真实变化 = 表面变化
+        - 内敛：内心变化减半（不轻易改变看法）
+        - 虚伪：可能完全相反
+        - 多疑：正面变化减半，负面变化加倍
+        - 忠诚：变化稳定，但需要更长时间建立信任
+
+        Args:
+            affection_change: 原始好感度变化
+            traits: 角色的性格特质列表
+
+        Returns:
+            调整后的真实好感度变化
+        """
+        if not traits:
+            return affection_change
+
+        adjusted = affection_change
+
+        for trait in traits:
+            if trait == "直率":
+                # 表里如一，不做调整
+                pass
+            elif trait == "内敛":
+                # 内心变化减半（不轻易改变看法）
+                if affection_change > 0:
+                    adjusted = max(adjusted, affection_change // 2)
+                else:
+                    adjusted = min(adjusted, affection_change // 2)
+            elif trait == "虚伪":
+                # 可能完全相反（如果是正向变化，内心可能是负向）
+                # 这里用一个随机因素，但为了确定性，我们用固定规则：
+                # 大的正向变化 -> 内心负向
+                if affection_change >= 20:
+                    adjusted = -affection_change // 2
+            elif trait == "多疑":
+                # 正面变化减半，负面变化加倍
+                if affection_change > 0:
+                    adjusted = affection_change // 2
+                else:
+                    adjusted = affection_change * 2
+            elif trait == "忠诚":
+                # 变化稳定，正向变化加成，负向变化减半
+                if affection_change > 0:
+                    adjusted = int(affection_change * 1.2)
+                else:
+                    adjusted = affection_change // 2
+            elif trait == "热情":
+                # 表面更热情，但内心变化正常
+                pass  # 真实变化不变
+
+        return adjusted
+
+    def _update_relationship_flags(self, rel: RelationshipState, use_true_affection: bool = False) -> None:
+        """根据好感度更新关系状态标记
+
+        Args:
+            rel: 关系状态对象
+            use_true_affection: 是否使用真实好感度（默认使用表面好感度）
+        """
         # 清除旧的好感度相关标记
         affection_flags = ["敌对", "厌恶", "陌生", "友好", "信任", "亲密"]
         rel.flags = [f for f in rel.flags if f not in affection_flags]
 
-        # 根据好感度添加新标记
-        if rel.affection <= -50:
+        # 根据好感度添加新标记（默认基于表面好感度）
+        affection = rel.true_affection if use_true_affection else rel.apparent_affection
+
+        if affection <= -50:
             rel.flags.append("敌对")
-        elif rel.affection <= -20:
+        elif affection <= -20:
             rel.flags.append("厌恶")
-        elif rel.affection < 20:
+        elif affection < 20:
             rel.flags.append("陌生")
-        elif rel.affection < 50:
+        elif affection < 50:
             rel.flags.append("友好")
-        elif rel.affection < 80:
+        elif affection < 80:
             rel.flags.append("信任")
         else:
             rel.flags.append("亲密")
@@ -531,13 +681,15 @@ class GameStateManager:
             choice_history=[c.to_dict() for c in state.choice_history]
         )
 
-    def apply_effects(self, state: GameState, effects: EventEffects, player_char_name: str = "") -> GameState:
+    def apply_effects(self, state: GameState, effects: EventEffects, player_char_name: str = "",
+                     char_traits_map: Dict[str, List[str]] = None) -> GameState:
         """应用事件/选择效果
 
         Args:
             state: 游戏状态
             effects: 效果对象
             player_char_name: 玩家角色名（用于关系更新）
+            char_traits_map: 角色名到性格特质的映射
         """
         # 设置标记
         for flag in effects.set_flags:
@@ -569,9 +721,15 @@ class GameStateManager:
         if effects.relationship_updates:
             for char_name, targets in effects.relationship_updates.items():
                 for target_name, affection_change in targets.items():
+                    # 获取角色的性格特质
+                    char_traits = None
+                    if char_traits_map and char_name in char_traits_map:
+                        char_traits = char_traits_map[char_name]
+
                     self.update_relationship(
                         state, char_name, target_name, affection_change,
-                        reason=f"玩家选择"
+                        reason="玩家选择",
+                        char_traits=char_traits
                     )
 
         return state
@@ -760,14 +918,20 @@ class NodeNavigator:
                 global_updates=effects.get("global_updates", {}),
                 relationship_updates=effects.get("relationship_updates", {})
             )
-            # 获取玩家角色名用于关系更新
+            # 获取玩家角色名和性格特质映射
             player_char_name = ""
+            char_traits_map = {}
             characters = db.get_characters_by_novel(state.novel_id)
             for c in characters:
                 if c["id"] == state.character_id:
                     player_char_name = c.get("name", "")
-                    break
-            self.state_manager.apply_effects(state, event_effects, player_char_name)
+                # 构建性格特质映射
+                char_name = c.get("name", "")
+                traits = c.get("personality_traits", [])
+                if char_name and traits:
+                    char_traits_map[char_name] = traits
+
+            self.state_manager.apply_effects(state, event_effects, player_char_name, char_traits_map)
 
         # 更新路线
         if option.get("route"):

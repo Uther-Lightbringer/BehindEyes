@@ -26,6 +26,13 @@ PROMPT_CHARACTER_CARD_USER_TEMPLATE = """分析以下小说章节，提取所有
 - distinctive_features: 显著特征（疤痕、胎记、配饰等特殊标记）
 - aliases: 别名/昵称列表（数组）
 - personality: 性格特征描述（20字内）
+- personality_traits: 性格特质列表（影响表里好感度差异），可选值：
+  - "直率"：表里如一，心里想什么就表现什么
+  - "内敛"：内心感情不外露，表面冷淡但内心可能很关心
+  - "虚伪"：表面热情但内心可能有其他想法
+  - "热情"：表现比内心更热情
+  - "多疑"：不易信任他人
+  - "忠诚"：一旦建立信任就很稳定
 - speaking_style: 说话风格描述（20字内）
 - is_playable: 是否可扮演（重要角色为true，配角/NPC为false）
 - relations: 与其他角色的关系列表，每个关系包含:
@@ -49,6 +56,7 @@ relations 示例:
 3. speaking_style要能指导后续对话生成
 4. appearance 和 clothing 尽量从原文提取真实描写，如无则合理推测
 5. relations 要根据原文中的互动关系推断，如无明确互动可设为空数组
+6. personality_traits 要根据角色的言行举止推断，可能包含多个特质
 
 章节内容:
 {content}
@@ -471,6 +479,7 @@ class DeepSeekClient:
                     "name": name,
                     "aliases": [],
                     "personality": "",
+                    "personality_traits": [],
                     "speaking_style": "",
                     "is_playable": len(characters) < 3,
                     "relations": []  # 列表格式
@@ -532,6 +541,12 @@ class DeepSeekClient:
                         existing_aliases = set(existing.get("aliases", []))
                         existing_aliases.update(char.get("aliases", []))
                         existing["aliases"] = list(existing_aliases)
+
+                    # 合并 personality_traits（去重）
+                    if char.get("personality_traits"):
+                        existing_traits = set(existing.get("personality_traits", []))
+                        existing_traits.update(char.get("personality_traits", []))
+                        existing["personality_traits"] = list(existing_traits)
 
                     # 合并 relations（列表格式，按 target 去重）
                     if char.get("relations"):

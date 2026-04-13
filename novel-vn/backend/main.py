@@ -2034,17 +2034,25 @@ async def get_relationships_api(state_id: str, request: Request):
             player_char_name = c.get("name", "")
             break
 
+    # 是否是管理员（可以看到真实好感度）
+    is_admin = user.get("role") == "admin"
+
     # 构建关系数据
     relationships = []
     for char_name, targets in state.relationships.items():
         for target_name, rel_state in targets.items():
-            relationships.append({
+            rel_data = {
                 "from": char_name,
                 "to": target_name,
-                "affection": rel_state.affection,
+                "affection": rel_state.apparent_affection,  # 表面好感度（玩家可见）
                 "flags": rel_state.flags,
-                "changes": rel_state.changes[-5:] if rel_state.changes else []  # 最近5条变化
-            })
+                "changes": rel_state.changes[-5:] if rel_state.changes else []
+            }
+            # 管理员可以看到真实好感度
+            if is_admin:
+                rel_data["true_affection"] = rel_state.true_affection
+                rel_data["difference"] = rel_state.true_affection - rel_state.apparent_affection
+            relationships.append(rel_data)
 
     return {
         "player_character": player_char_name,

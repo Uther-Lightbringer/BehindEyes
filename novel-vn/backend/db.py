@@ -59,6 +59,7 @@ CREATE TABLE IF NOT EXISTS characters (
     distinctive_features TEXT DEFAULT '',
     aliases TEXT DEFAULT '[]',
     personality TEXT DEFAULT '',
+    personality_traits TEXT DEFAULT '[]',
     speaking_style TEXT DEFAULT '',
     is_playable INTEGER DEFAULT 1,
     relations TEXT DEFAULT '{}',
@@ -292,6 +293,7 @@ class Database:
             ("aliases", "TEXT DEFAULT '[]'"),
             ("relations", "TEXT DEFAULT '{}'"),
             ("image_path", "TEXT DEFAULT ''"),
+            ("personality_traits", "TEXT DEFAULT '[]'"),  # 性格特质（内敛/直率/虚伪等）
         ]:
             try:
                 conn.execute(f"ALTER TABLE characters ADD COLUMN {col[0]} {col[1]}")
@@ -381,9 +383,9 @@ class Database:
                 conn.execute(
                     """INSERT OR IGNORE INTO characters
                        (id, novel_id, name, gender, age_range, appearance, clothing,
-                        distinctive_features, aliases, personality, speaking_style,
+                        distinctive_features, aliases, personality, personality_traits, speaking_style,
                         is_playable, relations)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         c["id"],
                         novel_id,
@@ -395,9 +397,10 @@ class Database:
                         c.get("distinctive_features", ""),
                         json.dumps(c.get("aliases", [])),
                         c.get("personality", ""),
+                        json.dumps(c.get("personality_traits", [])),
                         c.get("speaking_style", ""),
                         1 if c.get("is_playable", True) else 0,
-                        json.dumps(c.get("relations", {})),
+                        json.dumps(c.get("relations", [])),
                     ),
                 )
             conn.commit()
@@ -413,8 +416,9 @@ class Database:
         result = []
         for row in rows:
             d = dict(row)
-            d["aliases"] = json.loads(d["aliases"])
-            d["relations"] = json.loads(d["relations"])
+            d["aliases"] = json.loads(d["aliases"]) if d.get("aliases") else []
+            d["relations"] = json.loads(d["relations"]) if d.get("relations") else []
+            d["personality_traits"] = json.loads(d.get("personality_traits", "[]")) if d.get("personality_traits") else []
             d["is_playable"] = bool(d["is_playable"])
             result.append(d)
         return result
