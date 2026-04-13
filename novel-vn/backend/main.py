@@ -9,6 +9,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from db import db
 from image_storage import mount_static_images
 
+# 导入中间件
+from middleware import RequestIDMiddleware, ErrorHandlerMiddleware, setup_exception_handlers
+
 # 导入路由
 from routers import (
     auth_router,
@@ -22,6 +25,10 @@ from routers import (
 
 app = FastAPI(title="Novel Visual Novel API")
 
+# 注册中间件（顺序重要：后注册的先执行）
+app.add_middleware(ErrorHandlerMiddleware)
+app.add_middleware(RequestIDMiddleware)
+
 # CORS 配置
 app.add_middleware(
     CORSMiddleware,
@@ -30,6 +37,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# 注册异常处理器
+setup_exception_handlers(app)
 
 # 挂载静态图片服务
 mount_static_images(app)
