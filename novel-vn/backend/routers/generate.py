@@ -16,6 +16,7 @@ from deepseek_client import DeepSeekClient
 from image_client import EvolinkImageClient
 from image_storage import download_and_save, get_location_image_path, get_existing_location_image_url
 from state_machine import EventExtractor, NodeBuilder
+from knowledge_graph import KnowledgeGraphBuilder, HierarchicalSummaryTree
 
 router = APIRouter(tags=["生成"])
 
@@ -103,11 +104,12 @@ async def _run_parse_task(task_id: str, request: ParseRequest, novel_id: str, us
     chunk_overlap = settings.get("chunk_overlap", 300)
 
     PARSE_STAGES = [
-        {"id": "split_segments", "name": "拆分章节片段", "weight": 0.1},
-        {"id": "extract_characters", "name": "提取角色信息", "weight": 0.25},
-        {"id": "merge_characters", "name": "合并角色卡", "weight": 0.1},
-        {"id": "link_characters", "name": "关联角色到章节", "weight": 0.05},
-        {"id": "extract_events", "name": "提取事件定义", "weight": 0.2},
+        {"id": "split_segments", "name": "拆分章节片段", "weight": 0.08},
+        {"id": "extract_characters", "name": "提取角色信息", "weight": 0.2},
+        {"id": "merge_characters", "name": "合并角色卡", "weight": 0.08},
+        {"id": "link_characters", "name": "关联角色到章节", "weight": 0.04},
+        {"id": "extract_events", "name": "提取事件定义", "weight": 0.15},
+        {"id": "build_knowledge_graph", "name": "构建知识图谱", "weight": 0.15},
         {"id": "generate_avatars", "name": "生成角色头像", "weight": 0.3},
     ]
     total_stages = len(PARSE_STAGES)
@@ -190,9 +192,57 @@ async def _run_parse_task(task_id: str, request: ParseRequest, novel_id: str, us
         else:
             update_stage_progress(4, 1.0, "跳过事件提取（手动模式）")
 
-        # 阶段5: 生成角色头像
+        # 阶段5: 构建知识图谱
+        update_stage_progress(5, 0, "正在构建知识图谱...")
+        try:
+            kg_builder = KnowledgeGraphBuilder(llm_client=deepseek, db=db)
+            chapters_data = [
+                {
+                    "chapter_id": ch.chapter_id,
+                    "title": ch.title,
+                    "content": ch.content
+                }
+                for ch in request.chapters
+            ]
+
+            def kg_progress_callback(step, total, message):
+                kg_progress = step / total if total > 0 else 0
+                update_stage_progress(5, kg_progress, message)
+
+            kg_stats = await kg_builder.build_from_novel(
+                novel_id=novel_id,
+                chapters=chapters_data,
+                characters=merged_characters,
+                progress_callback=kg_progress_callback
+            )
+
+            # 构建层级摘要树
+            summary_tree = HierarchicalSummaryTree(llm_client=deepseek, db=db)
+            segments_with_summary = [
+                {
+                    "id": seg["id"],
+                    "content": seg["content"],
+                    "chapter_id": seg["chapter_key"],
+                    "segment_index": seg["index"],
+                    "summary": "",
+                    "characters": []
+                }
+                for seg in all_segments
+            ]
+            await summary_tree.build_tree(
+                novel_id=novel_id,
+                segments=segments_with_summary,
+                novel_title=request.novel_title
+            )
+
+            update_stage_progress(5, 1.0, f"知识图谱构建完成: {kg_stats}")
+        except Exception as e:
+            print(f"知识图谱构建失败: {e}")
+            update_stage_progress(5, 1.0, f"知识图谱构建跳过: {e}")
+
+        # 阶段6: 生成角色头像
         if request.enable_image_generation and image_client.is_configured():
-            update_stage_progress(5, 0, "正在生成角色头像...")
+            update_stage_progress(6, 0, "正在生成角色头像...")
             semaphore = asyncio.Semaphore(5)
 
             async def gen_avatar(char, sem):
@@ -212,9 +262,9 @@ async def _run_parse_task(task_id: str, request: ParseRequest, novel_id: str, us
                     return False
 
             results = await asyncio.gather(*[gen_avatar(c, semaphore) for c in merged_characters])
-            update_stage_progress(5, 1.0, f"已生成 {sum(results)}/{len(merged_characters)} 个头像")
+            update_stage_progress(6, 1.0, f"已生成 {sum(results)}/{len(merged_characters)} 个头像")
         else:
-            update_stage_progress(5, 1.0, "跳过头像生成")
+            update_stage_progress(6, 1.0, "跳过头像生成")
 
         # 获取最终数据
         final_characters = db.get_characters_by_novel(novel_id)
@@ -500,6 +550,8 @@ async def confirm_tree_api(novel_id: str, tree_id: str, request: Request):
 
 async def _generate_all_scenes_task(task_id: str, novel_id: str, tree_data: Dict):
     """为所有节点生成场景内容"""
+    from knowledge_graph import DynamicContextManager
+
     db.update_task(task_id, status="generating", progress=0.0, message="正在生成场景内容...")
 
     nodes = tree_data["nodes"]
@@ -508,13 +560,38 @@ async def _generate_all_scenes_task(task_id: str, novel_id: str, tree_data: Dict
     player_char = next((c for c in characters if c["id"] == player_char_id), characters[0] if characters else None)
     characters_map = {c["name"]: c for c in characters}
 
+    # 初始化动态上下文管理器
+    context_manager = DynamicContextManager(db=db, token_limit=2000)
+
     total = len(nodes)
     context = {}
 
     for i, node in enumerate(nodes):
         if node.get("needs_generation"):
+            # 获取当前节点涉及的章节和角色
+            chapter_index = 0
+            if tree_data.get("chapter_id"):
+                chapters = db.get_chapters_by_novel(novel_id)
+                for idx, ch in enumerate(chapters):
+                    if ch["id"] == tree_data["chapter_id"]:
+                        chapter_index = idx
+                        break
+
+            # 加载知识图谱上下文
+            involved_chars = node.get("characters_involved", [])
+            kg_context = context_manager.load_context_for_scene(
+                novel_id=novel_id,
+                current_chapter=chapter_index,
+                involved_characters=involved_chars
+            )
+
+            # 格式化上下文
+            kg_context_text = context_manager.format_for_prompt(kg_context)
+
+            # 传递知识图谱上下文到场景生成
             scene = await node_builder.generate_node_scene(
-                node=node, player_character=player_char, context=context, characters_map=characters_map
+                node=node, player_character=player_char, context=context,
+                characters_map=characters_map, knowledge_context=kg_context_text
             )
             db.update_story_node_scene(node["id"], scene)
             context = {

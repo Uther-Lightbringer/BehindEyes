@@ -265,6 +265,75 @@ CREATE TABLE IF NOT EXISTS branch_previews (
     FOREIGN KEY (novel_id) REFERENCES novels(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_branch_previews_novel ON branch_previews(novel_id);
+
+-- ============================================
+-- v3.0 新增表：知识图谱系统
+-- ============================================
+
+-- 角色关系网络
+CREATE TABLE IF NOT EXISTS character_relations (
+    id TEXT PRIMARY KEY,
+    novel_id TEXT NOT NULL,
+    char_a TEXT NOT NULL,
+    char_b TEXT NOT NULL,
+    relation_type TEXT,
+    base_affection INTEGER DEFAULT 0,
+    current_affection INTEGER DEFAULT 0,
+    history TEXT DEFAULT '[]',
+    source_chapter INTEGER,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(novel_id, char_a, char_b),
+    FOREIGN KEY (novel_id) REFERENCES novels(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_char_relations_novel ON character_relations(novel_id);
+CREATE INDEX IF NOT EXISTS idx_char_relations_chars ON character_relations(novel_id, char_a, char_b);
+
+-- 事件因果链
+CREATE TABLE IF NOT EXISTS event_chains (
+    id TEXT PRIMARY KEY,
+    novel_id TEXT NOT NULL,
+    event_id TEXT NOT NULL,
+    prerequisite_events TEXT DEFAULT '[]',
+    subsequent_events TEXT DEFAULT '[]',
+    mutually_exclusive TEXT DEFAULT '[]',
+    temporal_order INTEGER DEFAULT 0,
+    confidence REAL DEFAULT 1.0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (novel_id) REFERENCES novels(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_event_chains_novel ON event_chains(novel_id);
+
+-- 层级摘要树
+CREATE TABLE IF NOT EXISTS summary_tree (
+    id TEXT PRIMARY KEY,
+    novel_id TEXT NOT NULL,
+    level TEXT NOT NULL,
+    parent_id TEXT,
+    ref_id TEXT,
+    summary TEXT,
+    key_characters TEXT DEFAULT '[]',
+    key_events TEXT DEFAULT '[]',
+    keywords TEXT DEFAULT '[]',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (novel_id) REFERENCES novels(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_summary_tree_novel ON summary_tree(novel_id, level);
+CREATE INDEX IF NOT EXISTS idx_summary_tree_parent ON summary_tree(parent_id);
+
+-- 世界设定
+CREATE TABLE IF NOT EXISTS world_settings (
+    id TEXT PRIMARY KEY,
+    novel_id TEXT NOT NULL,
+    category TEXT,
+    name TEXT NOT NULL,
+    description TEXT,
+    attributes TEXT DEFAULT '{}',
+    first_mention_chapter INTEGER,
+    source_text TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (novel_id) REFERENCES novels(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_world_settings_novel ON world_settings(novel_id, category);
 """
 
 
@@ -1508,6 +1577,300 @@ class Database:
         values.append(novel_id)
         conn = self._get_conn()
         conn.execute(f"UPDATE novels SET {', '.join(fields)} WHERE id = ?", values)
+        conn.commit()
+        conn.close()
+
+    # ===================== v3.0 知识图谱相关方法 =====================
+
+    # ---------- Character Relations ----------
+    def create_character_relation(self, relation_id: str, novel_id: str,
+                                  char_a: str, char_b: str,
+                                  relation_type: str = "陌生人",
+                                  base_affection: int = 0,
+                                  current_affection: int = 0,
+                                  history: List = None,
+                                  source_chapter: int = None) -> None:
+        """创建角色关系"""
+        conn = self._get_conn()
+        conn.execute(
+            """INSERT OR REPLACE INTO character_relations
+               (id, novel_id, char_a, char_b, relation_type, base_affection,
+                current_affection, history, source_chapter)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (relation_id, novel_id, char_a, char_b, relation_type,
+             base_affection, current_affection,
+             json.dumps(history or [], ensure_ascii=False), source_chapter),
+        )
+        conn.commit()
+        conn.close()
+
+    def get_character_relations(self, novel_id: str, character_name: str = None) -> List[Dict[str, Any]]:
+        """获取角色关系"""
+        conn = self._get_conn()
+        if character_name:
+            rows = conn.execute(
+                """SELECT * FROM character_relations
+                   WHERE novel_id = ? AND (char_a = ? OR char_b = ?)""",
+                (novel_id, character_name, character_name)
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM character_relations WHERE novel_id = ?", (novel_id,)
+            ).fetchall()
+        conn.close()
+        result = []
+        for row in rows:
+            d = dict(row)
+            d["history"] = json.loads(d["history"]) if d.get("history") else []
+            result.append(d)
+        return result
+
+    def get_character_relation(self, novel_id: str, char_a: str, char_b: str) -> Optional[Dict[str, Any]]:
+        """获取两个角色之间的关系"""
+        conn = self._get_conn()
+        row = conn.execute(
+            """SELECT * FROM character_relations
+               WHERE novel_id = ? AND ((char_a = ? AND char_b = ?) OR (char_a = ? AND char_b = ?))""",
+            (novel_id, char_a, char_b, char_b, char_a)
+        ).fetchone()
+        conn.close()
+        if not row:
+            return None
+        d = dict(row)
+        d["history"] = json.loads(d["history"]) if d.get("history") else []
+        return d
+
+    def update_character_relation_affection(self, relation_id: str, new_affection: int,
+                                            change_reason: str = None) -> None:
+        """更新角色好感度"""
+        conn = self._get_conn()
+        # 先获取现有数据
+        row = conn.execute("SELECT current_affection, history FROM character_relations WHERE id = ?",
+                          (relation_id,)).fetchone()
+        if row:
+            history = json.loads(row["history"]) if row["history"] else []
+            if change_reason:
+                history.append({
+                    "from": row["current_affection"],
+                    "to": new_affection,
+                    "reason": change_reason,
+                    "timestamp": datetime.utcnow().isoformat() if 'datetime' in dir() else ""
+                })
+            conn.execute(
+                "UPDATE character_relations SET current_affection = ?, history = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (new_affection, json.dumps(history, ensure_ascii=False), relation_id),
+            )
+            conn.commit()
+        conn.close()
+
+    def delete_character_relations_by_novel(self, novel_id: str) -> None:
+        """删除小说的所有角色关系"""
+        conn = self._get_conn()
+        conn.execute("DELETE FROM character_relations WHERE novel_id = ?", (novel_id,))
+        conn.commit()
+        conn.close()
+
+    # ---------- Event Chains ----------
+    def create_event_chain(self, chain_id: str, novel_id: str, event_id: str,
+                          prerequisite_events: List = None,
+                          subsequent_events: List = None,
+                          mutually_exclusive: List = None,
+                          temporal_order: int = 0,
+                          confidence: float = 1.0) -> None:
+        """创建事件因果链"""
+        conn = self._get_conn()
+        conn.execute(
+            """INSERT OR REPLACE INTO event_chains
+               (id, novel_id, event_id, prerequisite_events, subsequent_events,
+                mutually_exclusive, temporal_order, confidence)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (chain_id, novel_id, event_id,
+             json.dumps(prerequisite_events or [], ensure_ascii=False),
+             json.dumps(subsequent_events or [], ensure_ascii=False),
+             json.dumps(mutually_exclusive or [], ensure_ascii=False),
+             temporal_order, confidence),
+        )
+        conn.commit()
+        conn.close()
+
+    def get_event_chains_by_novel(self, novel_id: str) -> List[Dict[str, Any]]:
+        """获取小说的所有事件链"""
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT * FROM event_chains WHERE novel_id = ? ORDER BY temporal_order",
+            (novel_id,)
+        ).fetchall()
+        conn.close()
+        result = []
+        for row in rows:
+            d = dict(row)
+            d["prerequisite_events"] = json.loads(d["prerequisite_events"])
+            d["subsequent_events"] = json.loads(d["subsequent_events"])
+            d["mutually_exclusive"] = json.loads(d["mutually_exclusive"])
+            result.append(d)
+        return result
+
+    def get_event_chain(self, novel_id: str, event_id: str) -> Optional[Dict[str, Any]]:
+        """获取单个事件链"""
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT * FROM event_chains WHERE novel_id = ? AND event_id = ?",
+            (novel_id, event_id)
+        ).fetchone()
+        conn.close()
+        if not row:
+            return None
+        d = dict(row)
+        d["prerequisite_events"] = json.loads(d["prerequisite_events"])
+        d["subsequent_events"] = json.loads(d["subsequent_events"])
+        d["mutually_exclusive"] = json.loads(d["mutually_exclusive"])
+        return d
+
+    def delete_event_chains_by_novel(self, novel_id: str) -> None:
+        """删除小说的所有事件链"""
+        conn = self._get_conn()
+        conn.execute("DELETE FROM event_chains WHERE novel_id = ?", (novel_id,))
+        conn.commit()
+        conn.close()
+
+    # ---------- Summary Tree ----------
+    def create_summary_node(self, node_id: str, novel_id: str, level: str,
+                           summary: str, parent_id: str = None, ref_id: str = None,
+                           key_characters: List = None, key_events: List = None,
+                           keywords: List = None) -> None:
+        """创建摘要树节点"""
+        conn = self._get_conn()
+        conn.execute(
+            """INSERT OR REPLACE INTO summary_tree
+               (id, novel_id, level, parent_id, ref_id, summary,
+                key_characters, key_events, keywords)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (node_id, novel_id, level, parent_id, ref_id, summary,
+             json.dumps(key_characters or [], ensure_ascii=False),
+             json.dumps(key_events or [], ensure_ascii=False),
+             json.dumps(keywords or [], ensure_ascii=False)),
+        )
+        conn.commit()
+        conn.close()
+
+    def get_summary_tree_by_novel(self, novel_id: str, level: str = None) -> List[Dict[str, Any]]:
+        """获取小说的摘要树"""
+        conn = self._get_conn()
+        if level:
+            rows = conn.execute(
+                "SELECT * FROM summary_tree WHERE novel_id = ? AND level = ?",
+                (novel_id, level)
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM summary_tree WHERE novel_id = ?", (novel_id,)
+            ).fetchall()
+        conn.close()
+        result = []
+        for row in rows:
+            d = dict(row)
+            d["key_characters"] = json.loads(d["key_characters"])
+            d["key_events"] = json.loads(d["key_events"])
+            d["keywords"] = json.loads(d["keywords"])
+            result.append(d)
+        return result
+
+    def get_summary_node(self, node_id: str) -> Optional[Dict[str, Any]]:
+        """获取单个摘要节点"""
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT * FROM summary_tree WHERE id = ?", (node_id,)
+        ).fetchone()
+        conn.close()
+        if not row:
+            return None
+        d = dict(row)
+        d["key_characters"] = json.loads(d["key_characters"])
+        d["key_events"] = json.loads(d["key_events"])
+        d["keywords"] = json.loads(d["keywords"])
+        return d
+
+    def get_summary_children(self, parent_id: str) -> List[Dict[str, Any]]:
+        """获取摘要节点的子节点"""
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT * FROM summary_tree WHERE parent_id = ?", (parent_id,)
+        ).fetchall()
+        conn.close()
+        result = []
+        for row in rows:
+            d = dict(row)
+            d["key_characters"] = json.loads(d["key_characters"])
+            d["key_events"] = json.loads(d["key_events"])
+            d["keywords"] = json.loads(d["keywords"])
+            result.append(d)
+        return result
+
+    def delete_summary_tree_by_novel(self, novel_id: str) -> None:
+        """删除小说的摘要树"""
+        conn = self._get_conn()
+        conn.execute("DELETE FROM summary_tree WHERE novel_id = ?", (novel_id,))
+        conn.commit()
+        conn.close()
+
+    # ---------- World Settings ----------
+    def create_world_setting(self, setting_id: str, novel_id: str, category: str,
+                            name: str, description: str = None,
+                            attributes: Dict = None,
+                            first_mention_chapter: int = None,
+                            source_text: str = None) -> None:
+        """创建世界设定"""
+        conn = self._get_conn()
+        conn.execute(
+            """INSERT OR REPLACE INTO world_settings
+               (id, novel_id, category, name, description, attributes,
+                first_mention_chapter, source_text)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (setting_id, novel_id, category, name, description,
+             json.dumps(attributes or {}, ensure_ascii=False),
+             first_mention_chapter, source_text),
+        )
+        conn.commit()
+        conn.close()
+
+    def get_world_settings_by_novel(self, novel_id: str, category: str = None) -> List[Dict[str, Any]]:
+        """获取小说的世界设定"""
+        conn = self._get_conn()
+        if category:
+            rows = conn.execute(
+                "SELECT * FROM world_settings WHERE novel_id = ? AND category = ?",
+                (novel_id, category)
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM world_settings WHERE novel_id = ?", (novel_id,)
+            ).fetchall()
+        conn.close()
+        result = []
+        for row in rows:
+            d = dict(row)
+            d["attributes"] = json.loads(d["attributes"])
+            result.append(d)
+        return result
+
+    def get_world_setting_by_name(self, novel_id: str, name: str) -> Optional[Dict[str, Any]]:
+        """根据名称获取世界设定"""
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT * FROM world_settings WHERE novel_id = ? AND name = ?",
+            (novel_id, name)
+        ).fetchone()
+        conn.close()
+        if not row:
+            return None
+        d = dict(row)
+        d["attributes"] = json.loads(d["attributes"])
+        return d
+
+    def delete_world_settings_by_novel(self, novel_id: str) -> None:
+        """删除小说的所有世界设定"""
+        conn = self._get_conn()
+        conn.execute("DELETE FROM world_settings WHERE novel_id = ?", (novel_id,))
         conn.commit()
         conn.close()
 
