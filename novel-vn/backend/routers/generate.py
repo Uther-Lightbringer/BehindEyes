@@ -9,6 +9,7 @@ import json
 import uuid
 import threading
 import os
+import logging
 
 from db import db
 from auth import get_current_user, login_required
@@ -17,6 +18,8 @@ from image_client import EvolinkImageClient
 from image_storage import download_and_save, get_location_image_path, get_existing_location_image_url
 from state_machine import EventExtractor, NodeBuilder
 from knowledge_graph import KnowledgeGraphBuilder, HierarchicalSummaryTree
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["生成"])
 
@@ -28,6 +31,12 @@ node_builder = NodeBuilder(deepseek)
 
 # 树生成任务缓存
 pending_trees: Dict[str, Dict[str, Any]] = {}
+
+# 任务取消标志
+task_cancel_flags: Dict[str, bool] = {}
+
+# 任务中间结果（用于错误恢复）
+task_checkpoints: Dict[str, Dict[str, Any]] = {}
 
 
 # ==================== 请求模型 ====================
@@ -97,11 +106,42 @@ async def start_parse(request_body: ParseRequest, request: Request, background_t
     return {"task_id": task_id, "novel_id": novel_id, "status": "pending"}
 
 
+@router.post("/api/parse/{task_id}/cancel")
+async def cancel_parse_task(task_id: str, request: Request):
+    """取消正在进行的解析任务"""
+    user = await login_required(get_current_user(request))
+
+    task = db.get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="任务不存在")
+
+    # 检查权限
+    if task.get("novel_id"):
+        novel = db.get_novel(task["novel_id"])
+        if novel and novel.get("owner_id") != user["id"] and user.get("role") != "admin":
+            raise HTTPException(status_code=403, detail="无权取消此任务")
+
+    # 设置取消标志
+    task_cancel_flags[task_id] = True
+    db.update_task(task_id, status="cancelled", message="任务已取消")
+
+    return {"success": True, "message": "取消请求已发送"}
+
+
 async def _run_parse_task(task_id: str, request: ParseRequest, novel_id: str, user_id: str):
     """解析任务执行"""
     settings = db.get_user_settings(user_id)
     chunk_size = settings.get("chunk_size", 5000)
     chunk_overlap = settings.get("chunk_overlap", 300)
+
+    # 初始化任务状态
+    task_cancel_flags[task_id] = False
+    task_checkpoints[task_id] = {
+        "stage": 0,
+        "all_characters": [],
+        "all_segments": [],
+        "merged_characters": []
+    }
 
     PARSE_STAGES = [
         {"id": "split_segments", "name": "拆分章节片段", "weight": 0.08},
@@ -113,6 +153,16 @@ async def _run_parse_task(task_id: str, request: ParseRequest, novel_id: str, us
         {"id": "generate_avatars", "name": "生成角色头像", "weight": 0.3},
     ]
     total_stages = len(PARSE_STAGES)
+
+    def check_cancelled():
+        """检查任务是否被取消"""
+        if task_cancel_flags.get(task_id, False):
+            raise asyncio.CancelledError("任务被用户取消")
+
+    def save_checkpoint(stage: int, data: Dict):
+        """保存检查点"""
+        task_checkpoints[task_id]["stage"] = stage
+        task_checkpoints[task_id].update(data)
 
     def update_stage_progress(stage_index, stage_progress=0, message=None):
         total_weight = sum(s["weight"] for s in PARSE_STAGES[:stage_index])
@@ -126,11 +176,13 @@ async def _run_parse_task(task_id: str, request: ParseRequest, novel_id: str, us
 
     try:
         # 阶段0: 拆分章节片段
+        check_cancelled()
         update_stage_progress(0, 0, "正在拆分章节...")
         all_characters = []
         all_segments = []
 
         for i, chapter in enumerate(request.chapters):
+            check_cancelled()  # 每个章节检查一次取消
             chapter_key = str(uuid.uuid4())
             db.create_chapter(chapter_key, novel_id, chapter.chapter_id, chapter.title, chapter.content)
             segments_data = deepseek._chunk_content(chapter.content, chunk_size, chunk_overlap)
@@ -145,11 +197,16 @@ async def _run_parse_task(task_id: str, request: ParseRequest, novel_id: str, us
 
             update_stage_progress(0, (i + 1) / len(request.chapters))
 
+        # 保存检查点
+        save_checkpoint(0, {"all_segments": all_segments})
+
         # 阶段1: 提取角色（并发控制）
+        check_cancelled()
         update_stage_progress(1, 0, "正在提取角色信息...")
         semaphore = asyncio.Semaphore(5)
 
         async def extract_chars_with_limit(seg, sem):
+            check_cancelled()
             async with sem:
                 return await deepseek.generate_character_cards(seg["content"], user_id=user_id, novel_id=novel_id)
 
@@ -160,16 +217,25 @@ async def _run_parse_task(task_id: str, request: ParseRequest, novel_id: str, us
                 all_characters.extend(r)
         update_stage_progress(1, 1.0)
 
+        # 保存检查点
+        save_checkpoint(1, {"all_characters": all_characters})
+
         # 阶段2: 合并角色
+        check_cancelled()
         update_stage_progress(2, 0, "正在合并角色卡...")
         merged_characters = deepseek.merge_characters([all_characters])
         db.create_characters(novel_id, merged_characters)
         update_stage_progress(2, 1.0, f"已合并 {len(merged_characters)} 个角色")
 
+        # 保存检查点
+        save_checkpoint(2, {"merged_characters": merged_characters})
+
         # 阶段3: 关联角色到章节
+        check_cancelled()
         update_stage_progress(3, 0, "正在关联角色到章节...")
         chapters = db.get_chapters_by_novel(novel_id)
         for chapter_idx, chapter in enumerate(request.chapters):
+            check_cancelled()
             if chapter_idx < len(chapters):
                 ch = chapters[chapter_idx]
                 for seg in all_segments:
@@ -180,6 +246,7 @@ async def _run_parse_task(task_id: str, request: ParseRequest, novel_id: str, us
             update_stage_progress(3, (chapter_idx + 1) / len(request.chapters))
 
         # 阶段4: 事件提取
+        check_cancelled()
         if request.event_extraction_mode != "manual":
             update_stage_progress(4, 0, "正在提取事件定义...")
             events = await event_extractor.extract_events_from_segments(
@@ -187,12 +254,14 @@ async def _run_parse_task(task_id: str, request: ParseRequest, novel_id: str, us
                 novel_id=novel_id, mode=request.event_extraction_mode
             )
             for event in events:
+                check_cancelled()
                 db.create_story_event(event["id"], novel_id, event)
             update_stage_progress(4, 1.0, f"已提取 {len(events)} 个事件")
         else:
             update_stage_progress(4, 1.0, "跳过事件提取（手动模式）")
 
         # 阶段5: 构建知识图谱
+        check_cancelled()
         update_stage_progress(5, 0, "正在构建知识图谱...")
         try:
             kg_builder = KnowledgeGraphBuilder(llm_client=deepseek, db=db)
@@ -237,15 +306,17 @@ async def _run_parse_task(task_id: str, request: ParseRequest, novel_id: str, us
 
             update_stage_progress(5, 1.0, f"知识图谱构建完成: {kg_stats}")
         except Exception as e:
-            print(f"知识图谱构建失败: {e}")
+            logger.warning(f"知识图谱构建失败: {e}")
             update_stage_progress(5, 1.0, f"知识图谱构建跳过: {e}")
 
         # 阶段6: 生成角色头像
+        check_cancelled()
         if request.enable_image_generation and image_client.is_configured():
             update_stage_progress(6, 0, "正在生成角色头像...")
             semaphore = asyncio.Semaphore(5)
 
             async def gen_avatar(char, sem):
+                check_cancelled()
                 async with sem:
                     try:
                         positive_prompt, negative_prompt = EvolinkImageClient.build_avatar_prompt(
@@ -258,7 +329,7 @@ async def _run_parse_task(task_id: str, request: ParseRequest, novel_id: str, us
                                 db.update_character_image_path(char["id"], os.path.relpath(path, os.path.dirname(__file__)))
                                 return True
                     except Exception as e:
-                        print(f"生成头像失败: {e}")
+                        logger.warning(f"生成头像失败: {e}")
                     return False
 
             results = await asyncio.gather(*[gen_avatar(c, semaphore) for c in merged_characters])
@@ -267,6 +338,7 @@ async def _run_parse_task(task_id: str, request: ParseRequest, novel_id: str, us
             update_stage_progress(6, 1.0, "跳过头像生成")
 
         # 获取最终数据
+        check_cancelled()
         final_characters = db.get_characters_by_novel(novel_id)
         final_chapters = db.get_chapters_by_novel(novel_id)
 
@@ -294,10 +366,31 @@ async def _run_parse_task(task_id: str, request: ParseRequest, novel_id: str, us
             }
         )
 
+        # 清理检查点
+        if task_id in task_checkpoints:
+            del task_checkpoints[task_id]
+        if task_id in task_cancel_flags:
+            del task_cancel_flags[task_id]
+
+    except asyncio.CancelledError:
+        logger.info(f"任务 {task_id} 已取消")
+        db.update_task(task_id, status="cancelled", message="用户取消")
+        # 保留检查点以便恢复
     except Exception as e:
         import traceback
         traceback.print_exc()
-        db.update_task(task_id, status="failed", error=str(e))
+        logger.error(f"任务 {task_id} 失败: {e}")
+        # 保存中间结果到错误信息
+        checkpoint = task_checkpoints.get(task_id, {})
+        error_detail = {
+            "error": str(e),
+            "stage": checkpoint.get("stage", 0),
+            "partial_results": {
+                "segments_count": len(checkpoint.get("all_segments", [])),
+                "characters_count": len(checkpoint.get("merged_characters", []))
+            }
+        }
+        db.update_task(task_id, status="failed", error=json.dumps(error_detail, ensure_ascii=False))
 
 
 # ==================== 任务状态 API ====================
@@ -309,6 +402,35 @@ async def get_parse_status(task_id: str):
     if not task:
         raise HTTPException(status_code=404, detail="任务不存在")
     return task
+
+
+@router.get("/api/parse/{task_id}/checkpoint")
+async def get_task_checkpoint(task_id: str, request: Request):
+    """获取任务的检查点数据（用于错误恢复分析）"""
+    user = await login_required(get_current_user(request))
+
+    task = db.get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="任务不存在")
+
+    # 检查权限
+    if task.get("novel_id"):
+        novel = db.get_novel(task["novel_id"])
+        if novel and novel.get("owner_id") != user["id"] and user.get("role") != "admin":
+            raise HTTPException(status_code=403, detail="无权访问")
+
+    checkpoint = task_checkpoints.get(task_id, {})
+
+    return {
+        "task_id": task_id,
+        "status": task.get("status"),
+        "checkpoint": {
+            "stage": checkpoint.get("stage", 0),
+            "segments_count": len(checkpoint.get("all_segments", [])),
+            "characters_count": len(checkpoint.get("all_characters", [])),
+            "merged_characters_count": len(checkpoint.get("merged_characters", []))
+        }
+    }
 
 
 @router.get("/api/parse/{task_id}/result")
