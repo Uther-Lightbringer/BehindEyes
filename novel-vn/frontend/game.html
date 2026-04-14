@@ -1,0 +1,1168 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>墨韵书境 - 视觉小说</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Ma+Shan+Zheng&family=ZCOOL+XiaoWei&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --paper-light: #f4efe4;
+            --paper-cream: #e8dfd0;
+            --paper-aged: #d9cdb8;
+            --ink-black: #1a1612;
+            --ink-gray: #3d362e;
+            --ink-faded: #6b5f52;
+            --vermillion: #c73e3a;
+            --vermillion-dark: #8b2323;
+            --gold-patina: #b8860b;
+            --jade-green: #2d5a4a;
+            --shadow-ink: rgba(26, 22, 18, 0.15);
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        @font-face {
+            font-family: 'Chinese Serif';
+            src: local('STKaiti'), local('KaiTi'), local('楷体');
+        }
+
+        body {
+            font-family: 'ZCOOL XiaoWei', 'Chinese Serif', serif;
+            background: var(--paper-light);
+            color: var(--ink-black);
+            min-height: 100vh;
+            overflow: hidden;
+            cursor: url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4" fill="%23c73e3a"/></svg>'), auto;
+        }
+
+        /* 宣纸纹理背景 */
+        .paper-texture {
+            position: fixed;
+            inset: 0;
+            background:
+                url('data:image/svg+xml,<svg viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg"><filter id="noise"><feTurbulence type="fractalNoise" baseFrequency="0.85" numOctaves="4" stitchTiles="stitch"/></filter><rect width="100%" height="100%" filter="url(%23noise)" opacity="0.08"/></svg>'),
+                linear-gradient(135deg, var(--paper-light) 0%, var(--paper-cream) 50%, var(--paper-aged) 100%);
+            pointer-events: none;
+            z-index: 0;
+        }
+
+        /* 主容器 */
+        .game-container {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            z-index: 1;
+        }
+
+        /* 场景背景 */
+        .scene-background {
+            position: absolute;
+            inset: 0;
+            z-index: 0;
+            overflow: hidden;
+        }
+
+        .scene-bg-image {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            filter: sepia(0.15) contrast(0.95);
+            transition: opacity 1.5s ease, filter 1.5s ease;
+        }
+
+        /* 水墨晕染遮罩 */
+        .ink-wash-overlay {
+            position: absolute;
+            inset: 0;
+            background:
+                radial-gradient(ellipse at 0% 100%, rgba(26, 22, 18, 0.3) 0%, transparent 50%),
+                radial-gradient(ellipse at 100% 0%, rgba(26, 22, 18, 0.2) 0%, transparent 40%);
+            pointer-events: none;
+        }
+
+        /* 顶部工具栏 */
+        .top-bar {
+            position: relative;
+            z-index: 100;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 16px 32px;
+            background: linear-gradient(180deg, rgba(244, 239, 228, 0.95) 0%, rgba(244, 239, 228, 0) 100%);
+        }
+
+        .chapter-title {
+            font-family: 'Ma Shan Zheng', cursive;
+            font-size: 1.5rem;
+            color: var(--ink-gray);
+            letter-spacing: 0.15em;
+            text-shadow: 1px 1px 2px var(--shadow-ink);
+        }
+
+        .top-controls {
+            display: flex;
+            gap: 12px;
+        }
+
+        .control-btn {
+            width: 44px;
+            height: 44px;
+            border: 2px solid var(--ink-faded);
+            border-radius: 50%;
+            background: var(--paper-cream);
+            color: var(--ink-gray);
+            font-size: 1.1rem;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 2px 2px 8px var(--shadow-ink);
+        }
+
+        .control-btn:hover {
+            background: var(--ink-black);
+            color: var(--paper-light);
+            border-color: var(--ink-black);
+            transform: scale(1.08);
+        }
+
+        /* 主内容区 */
+        .main-content {
+            flex: 1;
+            position: relative;
+            display: flex;
+            flex-direction: column;
+            justify-content: flex-end;
+            padding: 0;
+        }
+
+        /* 角色立绘区 */
+        .character-stage {
+            position: absolute;
+            bottom: 15%;
+            left: 0;
+            right: 0;
+            height: 70%;
+            pointer-events: none;
+            display: flex;
+            justify-content: center;
+            align-items: flex-end;
+        }
+
+        .character-sprite {
+            max-height: 85%;
+            max-width: 40%;
+            object-fit: contain;
+            filter: drop-shadow(0 10px 30px rgba(0,0,0,0.3));
+            transition: transform 0.6s cubic-bezier(0.34, 1.56, 0.64, 1),
+                        opacity 0.5s ease,
+                        filter 0.3s ease;
+        }
+
+        .character-sprite.left {
+            transform: translateX(-30px);
+        }
+
+        .character-sprite.right {
+            transform: translateX(30px);
+        }
+
+        .character-sprite.speaking {
+            filter: drop-shadow(0 10px 30px rgba(0,0,0,0.3)) brightness(1.05);
+            transform: scale(1.02);
+        }
+
+        .character-sprite.dimmed {
+            filter: drop-shadow(0 10px 30px rgba(0,0,0,0.3)) brightness(0.6) saturate(0.7);
+        }
+
+        /* 好感度指示器 */
+        .affection-indicator {
+            position: absolute;
+            top: 100px;
+            right: 32px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            z-index: 50;
+        }
+
+        .affection-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 8px 16px;
+            background: linear-gradient(135deg, rgba(244, 239, 228, 0.9) 0%, rgba(232, 223, 208, 0.95) 100%);
+            border-radius: 24px;
+            border: 1px solid var(--paper-aged);
+            box-shadow: 3px 3px 10px var(--shadow-ink);
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+        .affection-item:hover {
+            transform: translateX(-8px);
+            box-shadow: 5px 5px 15px var(--shadow-ink);
+        }
+
+        .affection-avatar {
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            background: var(--paper-aged);
+            border: 2px solid var(--gold-patina);
+            overflow: hidden;
+        }
+
+        .affection-avatar img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+
+        .affection-bars {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+
+        .affection-name {
+            font-size: 0.85rem;
+            color: var(--ink-black);
+            font-weight: 500;
+        }
+
+        .affection-bar-container {
+            width: 80px;
+            height: 6px;
+            background: var(--paper-aged);
+            border-radius: 3px;
+            overflow: hidden;
+        }
+
+        .affection-bar-fill {
+            height: 100%;
+            background: linear-gradient(90deg, var(--jade-green) 0%, #4a8b6f 100%);
+            border-radius: 3px;
+            transition: width 0.5s ease;
+        }
+
+        .affection-bar-fill.negative {
+            background: linear-gradient(90deg, var(--vermillion-dark) 0%, var(--vermillion) 100%);
+        }
+
+        /* 对话卷轴 */
+        .dialogue-scroll {
+            position: relative;
+            z-index: 80;
+            margin: 0 24px 24px;
+            padding: 0;
+            background: transparent;
+        }
+
+        /* 卷轴装饰 - 顶部 */
+        .scroll-rod-top {
+            height: 18px;
+            background: linear-gradient(180deg,
+                #5c4033 0%,
+                #8b6914 20%,
+                #d4a84b 50%,
+                #8b6914 80%,
+                #5c4033 100%
+            );
+            border-radius: 9px 9px 0 0;
+            box-shadow:
+                0 4px 12px rgba(0,0,0,0.3),
+                inset 0 2px 4px rgba(255,255,255,0.2);
+            position: relative;
+        }
+
+        .scroll-rod-top::before,
+        .scroll-rod-top::after {
+            content: '';
+            position: absolute;
+            top: 50%;
+            transform: translateY(-50%);
+            width: 28px;
+            height: 28px;
+            background: radial-gradient(circle at 30% 30%, #d4a84b, #8b6914, #5c4033);
+            border-radius: 50%;
+            box-shadow: 2px 2px 6px rgba(0,0,0,0.4);
+        }
+
+        .scroll-rod-top::before { left: -8px; }
+        .scroll-rod-top::after { right: -8px; }
+
+        /* 卷轴主体 */
+        .scroll-body {
+            position: relative;
+            background:
+                repeating-linear-gradient(
+                    90deg,
+                    transparent 0px,
+                    transparent 28px,
+                    rgba(200, 180, 150, 0.1) 28px,
+                    rgba(200, 180, 150, 0.1) 29px
+                ),
+                linear-gradient(180deg,
+                    var(--paper-cream) 0%,
+                    var(--paper-light) 20%,
+                    var(--paper-light) 80%,
+                    var(--paper-cream) 100%
+                );
+            border-left: 3px solid #8b6914;
+            border-right: 3px solid #8b6914;
+            padding: 24px 32px;
+            min-height: 180px;
+        }
+
+        /* 印章装饰 */
+        .scroll-seal {
+            position: absolute;
+            right: 24px;
+            top: 16px;
+            width: 48px;
+            height: 48px;
+            opacity: 0.15;
+        }
+
+        .scroll-seal svg {
+            width: 100%;
+            height: 100%;
+        }
+
+        /* 角色名称 */
+        .speaker-name {
+            position: absolute;
+            top: -12px;
+            left: 32px;
+            padding: 6px 20px;
+            background: var(--vermillion);
+            color: var(--paper-light);
+            font-family: 'Ma Shan Zheng', cursive;
+            font-size: 1.1rem;
+            letter-spacing: 0.1em;
+            box-shadow: 3px 3px 8px rgba(0,0,0,0.2);
+            clip-path: polygon(8px 0, calc(100% - 8px) 0, 100% 50%, calc(100% - 8px) 100%, 8px 100%, 0 50%);
+        }
+
+        .speaker-name.narrator {
+            background: var(--ink-gray);
+        }
+
+        .speaker-name.player {
+            background: var(--jade-green);
+        }
+
+        /* 对话内容 */
+        .dialogue-content {
+            font-size: 1.15rem;
+            line-height: 1.9;
+            color: var(--ink-black);
+            letter-spacing: 0.05em;
+            min-height: 100px;
+            text-align: justify;
+        }
+
+        .dialogue-content .highlight {
+            color: var(--vermillion);
+            font-weight: 600;
+        }
+
+        .dialogue-content .thought {
+            font-style: italic;
+            color: var(--ink-faded);
+        }
+
+        /* 打字机光标 */
+        .typing-cursor {
+            display: inline-block;
+            width: 2px;
+            height: 1.2em;
+            background: var(--vermillion);
+            margin-left: 2px;
+            animation: blink 0.8s infinite;
+            vertical-align: text-bottom;
+        }
+
+        @keyframes blink {
+            0%, 50% { opacity: 1; }
+            51%, 100% { opacity: 0; }
+        }
+
+        /* 继续提示 */
+        .continue-hint {
+            position: absolute;
+            bottom: 12px;
+            right: 24px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            color: var(--ink-faded);
+            font-size: 0.85rem;
+            animation: float 2s ease-in-out infinite;
+        }
+
+        .continue-hint svg {
+            width: 16px;
+            height: 16px;
+        }
+
+        @keyframes float {
+            0%, 100% { transform: translateY(0); }
+            50% { transform: translateY(-4px); }
+        }
+
+        /* 卷轴装饰 - 底部 */
+        .scroll-rod-bottom {
+            height: 18px;
+            background: linear-gradient(0deg,
+                #5c4033 0%,
+                #8b6914 20%,
+                #d4a84b 50%,
+                #8b6914 80%,
+                #5c4033 100%
+            );
+            border-radius: 0 0 9px 9px;
+            box-shadow:
+                0 -4px 12px rgba(0,0,0,0.2),
+                inset 0 -2px 4px rgba(255,255,255,0.1);
+            position: relative;
+        }
+
+        /* 选择面板 */
+        .choice-panel {
+            position: fixed;
+            inset: 0;
+            z-index: 200;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: rgba(26, 22, 18, 0.6);
+            backdrop-filter: blur(4px);
+            opacity: 0;
+            visibility: hidden;
+            transition: all 0.4s ease;
+        }
+
+        .choice-panel.active {
+            opacity: 1;
+            visibility: visible;
+        }
+
+        .choice-container {
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+            padding: 32px;
+            max-width: 600px;
+            width: 90%;
+        }
+
+        .choice-prompt {
+            text-align: center;
+            color: var(--paper-light);
+            font-family: 'Ma Shan Zheng', cursive;
+            font-size: 1.5rem;
+            letter-spacing: 0.1em;
+            margin-bottom: 16px;
+            text-shadow: 2px 2px 8px rgba(0,0,0,0.5);
+        }
+
+        .choice-option {
+            position: relative;
+            padding: 20px 32px;
+            background: linear-gradient(135deg, var(--paper-cream) 0%, var(--paper-light) 100%);
+            border: 2px solid var(--paper-aged);
+            color: var(--ink-black);
+            font-size: 1.1rem;
+            letter-spacing: 0.05em;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            text-align: center;
+            box-shadow: 4px 4px 12px rgba(0,0,0,0.2);
+            clip-path: polygon(16px 0, calc(100% - 16px) 0, 100% 50%, calc(100% - 16px) 100%, 16px 100%, 0 50%);
+        }
+
+        .choice-option::before {
+            content: '';
+            position: absolute;
+            inset: 4px;
+            border: 1px solid var(--ink-faded);
+            opacity: 0.3;
+            clip-path: polygon(12px 0, calc(100% - 12px) 0, 100% 50%, calc(100% - 12px) 100%, 12px 100%, 0 50%);
+        }
+
+        .choice-option:hover {
+            transform: scale(1.03) translateY(-2px);
+            border-color: var(--vermillion);
+            box-shadow: 6px 6px 20px rgba(0,0,0,0.3);
+        }
+
+        .choice-option:hover::after {
+            content: '▶';
+            position: absolute;
+            left: 20px;
+            top: 50%;
+            transform: translateY(-50%);
+            color: var(--vermillion);
+            font-size: 0.8rem;
+        }
+
+        .choice-option .effects {
+            display: block;
+            font-size: 0.85rem;
+            color: var(--ink-faded);
+            margin-top: 6px;
+        }
+
+        .choice-option .effects .positive {
+            color: var(--jade-green);
+        }
+
+        .choice-option .effects .negative {
+            color: var(--vermillion);
+        }
+
+        /* 存档/菜单面板 */
+        .menu-panel {
+            position: fixed;
+            inset: 0;
+            z-index: 300;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: rgba(26, 22, 18, 0.85);
+            backdrop-filter: blur(8px);
+            opacity: 0;
+            visibility: hidden;
+            transition: all 0.4s ease;
+        }
+
+        .menu-panel.active {
+            opacity: 1;
+            visibility: visible;
+        }
+
+        .menu-scroll {
+            background: var(--paper-light);
+            border: 4px solid #8b6914;
+            border-radius: 8px;
+            padding: 48px;
+            min-width: 400px;
+            max-width: 90vw;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+        }
+
+        .menu-title {
+            font-family: 'Ma Shan Zheng', cursive;
+            font-size: 2rem;
+            color: var(--ink-black);
+            text-align: center;
+            margin-bottom: 32px;
+            letter-spacing: 0.2em;
+        }
+
+        .menu-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 16px;
+        }
+
+        .menu-btn {
+            padding: 16px 24px;
+            background: var(--paper-cream);
+            border: 2px solid var(--ink-faded);
+            color: var(--ink-black);
+            font-family: 'ZCOOL XiaoWei', serif;
+            font-size: 1.1rem;
+            letter-spacing: 0.1em;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 12px;
+        }
+
+        .menu-btn:hover {
+            background: var(--ink-black);
+            color: var(--paper-light);
+            border-color: var(--ink-black);
+        }
+
+        .menu-btn.close {
+            grid-column: span 2;
+            background: var(--vermillion);
+            color: var(--paper-light);
+            border-color: var(--vermillion);
+        }
+
+        .menu-btn.close:hover {
+            background: var(--vermillion-dark);
+        }
+
+        /* 场景转换动画 */
+        .scene-transition {
+            position: fixed;
+            inset: 0;
+            z-index: 500;
+            pointer-events: none;
+        }
+
+        .scene-transition::before,
+        .scene-transition::after {
+            content: '';
+            position: absolute;
+            inset: 0;
+            background: var(--ink-black);
+            transform: translateY(-100%);
+        }
+
+        .scene-transition.active::before {
+            animation: curtainDown 0.6s ease forwards;
+        }
+
+        .scene-transition.active::after {
+            animation: curtainDown 0.6s ease 0.1s forwards;
+        }
+
+        .scene-transition.out::before {
+            animation: curtainUp 0.6s ease forwards;
+        }
+
+        .scene-transition.out::after {
+            animation: curtainUp 0.6s ease 0.1s forwards;
+        }
+
+        @keyframes curtainDown {
+            from { transform: translateY(-100%); }
+            to { transform: translateY(0); }
+        }
+
+        @keyframes curtainUp {
+            from { transform: translateY(0); }
+            to { transform: translateY(100%); }
+        }
+
+        /* 通知提示 */
+        .notification {
+            position: fixed;
+            top: 80px;
+            left: 50%;
+            transform: translateX(-50%) translateY(-20px);
+            padding: 12px 24px;
+            background: var(--paper-light);
+            border: 2px solid var(--vermillion);
+            color: var(--ink-black);
+            font-size: 0.95rem;
+            z-index: 600;
+            opacity: 0;
+            visibility: hidden;
+            transition: all 0.3s ease;
+            box-shadow: 4px 4px 12px rgba(0,0,0,0.2);
+        }
+
+        .notification.show {
+            opacity: 1;
+            visibility: visible;
+            transform: translateX(-50%) translateY(0);
+        }
+
+        /* 快捷键提示 */
+        .hotkey-hint {
+            position: fixed;
+            bottom: 24px;
+            left: 24px;
+            display: flex;
+            gap: 16px;
+            color: var(--ink-faded);
+            font-size: 0.8rem;
+            z-index: 50;
+        }
+
+        .hotkey-hint kbd {
+            padding: 2px 8px;
+            background: var(--paper-cream);
+            border: 1px solid var(--ink-faded);
+            border-radius: 4px;
+            font-family: inherit;
+        }
+
+        /* 响应式调整 */
+        @media (max-width: 768px) {
+            .dialogue-scroll {
+                margin: 0 12px 12px;
+            }
+
+            .scroll-body {
+                padding: 20px 16px;
+            }
+
+            .dialogue-content {
+                font-size: 1rem;
+            }
+
+            .affection-indicator {
+                top: 80px;
+                right: 12px;
+            }
+
+            .hotkey-hint {
+                display: none;
+            }
+
+            .menu-scroll {
+                padding: 24px;
+                min-width: auto;
+            }
+
+            .menu-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .menu-btn.close {
+                grid-column: span 1;
+            }
+        }
+
+        /* 减少动画 */
+        @media (prefers-reduced-motion: reduce) {
+            * {
+                animation-duration: 0.01ms !important;
+                transition-duration: 0.01ms !important;
+            }
+        }
+    </style>
+</head>
+<body>
+    <!-- 宣纸纹理背景 -->
+    <div class="paper-texture"></div>
+
+    <!-- 场景转换 -->
+    <div class="scene-transition" id="sceneTransition"></div>
+
+    <!-- 通知 -->
+    <div class="notification" id="notification"></div>
+
+    <!-- 主容器 -->
+    <div class="game-container" id="gameContainer">
+        <!-- 场景背景 -->
+        <div class="scene-background" id="sceneBackground">
+            <img class="scene-bg-image" id="bgImage" src="" alt="场景" />
+            <div class="ink-wash-overlay"></div>
+        </div>
+
+        <!-- 顶部工具栏 -->
+        <div class="top-bar">
+            <div class="chapter-title" id="chapterTitle">第一章 · 初遇</div>
+            <div class="top-controls">
+                <button class="control-btn" onclick="toggleAuto()" title="自动播放" id="autoBtn">▶</button>
+                <button class="control-btn" onclick="toggleSkip()" title="快进">⏩</button>
+                <button class="control-btn" onclick="openMenu()" title="菜单">☰</button>
+                <button class="control-btn" onclick="quickSave()" title="快存">💾</button>
+            </div>
+        </div>
+
+        <!-- 好感度指示器 -->
+        <div class="affection-indicator" id="affectionIndicator">
+            <div class="affection-item">
+                <div class="affection-avatar">
+                    <img src="" alt="" id="affAvatar1" />
+                </div>
+                <div class="affection-bars">
+                    <span class="affection-name" id="affName1">李清照</span>
+                    <div class="affection-bar-container">
+                        <div class="affection-bar-fill" id="affBar1" style="width: 65%"></div>
+                    </div>
+                </div>
+            </div>
+            <div class="affection-item">
+                <div class="affection-avatar">
+                    <img src="" alt="" id="affAvatar2" />
+                </div>
+                <div class="affection-bars">
+                    <span class="affection-name" id="affName2">苏东坡</span>
+                    <div class="affection-bar-container">
+                        <div class="affection-bar-fill" id="affBar2" style="width: 40%"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 角色立绘区 -->
+        <div class="character-stage" id="characterStage">
+            <img class="character-sprite left" id="charLeft" src="" alt="" style="display: none;" />
+            <img class="character-sprite right" id="charRight" src="" alt="" style="display: none;" />
+        </div>
+
+        <!-- 主内容区 -->
+        <div class="main-content">
+            <!-- 对话卷轴 -->
+            <div class="dialogue-scroll" id="dialogueScroll">
+                <div class="scroll-rod-top"></div>
+                <div class="scroll-body">
+                    <div class="speaker-name narrator" id="speakerName">旁白</div>
+
+                    <!-- 印章装饰 -->
+                    <div class="scroll-seal">
+                        <svg viewBox="0 0 100 100">
+                            <rect x="10" y="10" width="80" height="80" fill="none" stroke="currentColor" stroke-width="4"/>
+                            <text x="50" y="60" text-anchor="middle" font-size="30" fill="currentColor">墨</text>
+                        </svg>
+                    </div>
+
+                    <div class="dialogue-content" id="dialogueContent">
+                        月色如水，洒落在青石板路上。远处传来悠扬的琴声，在寂静的夜里显得格外清晰...
+                    </div>
+
+                    <div class="continue-hint" id="continueHint">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M12 19V5M5 12l7-7 7 7"/>
+                        </svg>
+                        点击继续
+                    </div>
+                </div>
+                <div class="scroll-rod-bottom"></div>
+            </div>
+        </div>
+
+        <!-- 快捷键提示 -->
+        <div class="hotkey-hint">
+            <span><kbd>空格</kbd> 继续</span>
+            <span><kbd>S</kbd> 快存</span>
+            <span><kbd>Esc</kbd> 菜单</span>
+        </div>
+    </div>
+
+    <!-- 选择面板 -->
+    <div class="choice-panel" id="choicePanel">
+        <div class="choice-container">
+            <div class="choice-prompt" id="choicePrompt">此时此刻，你想要...</div>
+            <div class="choice-options" id="choiceOptions">
+                <!-- 动态生成选项 -->
+            </div>
+        </div>
+    </div>
+
+    <!-- 菜单面板 -->
+    <div class="menu-panel" id="menuPanel">
+        <div class="menu-scroll">
+            <div class="menu-title">墨韵书境</div>
+            <div class="menu-grid">
+                <button class="menu-btn" onclick="saveGame()">📜 保存进度</button>
+                <button class="menu-btn" onclick="loadGame()">📖 读取存档</button>
+                <button class="menu-btn" onclick="showLog()">📋 对话记录</button>
+                <button class="menu-btn" onclick="showSettings()">⚙️ 游戏设置</button>
+                <button class="menu-btn close" onclick="closeMenu()">返回游戏</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // ==================== 游戏状态 ====================
+        const gameState = {
+            novelId: '',
+            currentChapter: 0,
+            currentNode: 'node_0',
+            currentRoute: 'main',
+            flags: {},
+            relationships: {},
+            visitedNodes: [],
+            isAuto: false,
+            isSkipping: false
+        };
+
+        // ==================== 示例场景数据 ====================
+        const exampleScenes = [
+            {
+                speaker: 'narrator',
+                speakerName: '旁白',
+                content: '月色如水，洒落在青石板路上。远处传来悠扬的琴声，在寂静的夜里显得格外清晰。',
+                characters: [],
+                background: ''
+            },
+            {
+                speaker: 'character',
+                speakerName: '李清照',
+                content: '今夜的月色，让我想起了那首词..."寻寻觅觅，冷冷清清，凄凄惨惨戚戚"...',
+                characters: [{ id: 'li', position: 'left', emotion: 'melancholy' }],
+                background: ''
+            },
+            {
+                speaker: 'player',
+                speakerName: '你',
+                content: '(她的声音如此动听，却透着一丝忧伤。我该如何回应？)',
+                characters: [{ id: 'li', position: 'left', emotion: 'melancholy' }],
+                background: ''
+            },
+            {
+                type: 'choice',
+                prompt: '此时此刻，你想要...',
+                options: [
+                    { text: '轻声走近，静静聆听', route: 'gentle', effects: ['好感度 +5'] },
+                    { text: '出声问候，打破沉默', route: 'bold', effects: ['好感度 +2'] },
+                    { text: '默默离去，不打扰她', route: 'quiet', effects: [] }
+                ]
+            }
+        ];
+
+        let currentSceneIndex = 0;
+        let isTyping = false;
+        let typingTimeout = null;
+
+        // ==================== 核心功能 ====================
+
+        // 显示场景
+        function showScene(index) {
+            if (index >= exampleScenes.length) return;
+
+            const scene = exampleScenes[index];
+
+            if (scene.type === 'choice') {
+                showChoices(scene);
+                return;
+            }
+
+            // 更新角色立绘
+            updateCharacters(scene.characters || []);
+
+            // 更新对话框
+            updateDialogue(scene);
+
+            currentSceneIndex = index;
+        }
+
+        // 更新角色立绘
+        function updateCharacters(characters) {
+            const charLeft = document.getElementById('charLeft');
+            const charRight = document.getElementById('charRight');
+
+            charLeft.style.display = 'none';
+            charRight.style.display = 'none';
+
+            characters.forEach(char => {
+                const el = char.position === 'left' ? charLeft : charRight;
+                el.style.display = 'block';
+                el.classList.remove('speaking', 'dimmed');
+
+                // 这里应该设置实际的角色图片
+                // el.src = `/api/images/${gameState.novelId}_${char.id}.png`;
+            });
+        }
+
+        // 更新对话框
+        function updateDialogue(scene) {
+            const speakerNameEl = document.getElementById('speakerName');
+            const dialogueContentEl = document.getElementById('dialogueContent');
+            const continueHint = document.getElementById('continueHint');
+
+            // 设置说话者名称
+            speakerNameEl.textContent = scene.speakerName;
+            speakerNameEl.className = 'speaker-name ' + scene.speaker;
+
+            // 打字机效果
+            typeWriter(scene.content, dialogueContentEl, () => {
+                continueHint.style.display = 'flex';
+            });
+        }
+
+        // 打字机效果
+        function typeWriter(text, element, callback) {
+            isTyping = true;
+            element.innerHTML = '';
+            let i = 0;
+
+            function type() {
+                if (i < text.length) {
+                    element.innerHTML += text.charAt(i);
+                    i++;
+                    typingTimeout = setTimeout(type, gameState.isSkipping ? 10 : 30);
+                } else {
+                    isTyping = false;
+                    if (callback) callback();
+                }
+            }
+
+            type();
+        }
+
+        // 显示选择
+        function showChoices(scene) {
+            const choicePanel = document.getElementById('choicePanel');
+            const choicePrompt = document.getElementById('choicePrompt');
+            const choiceOptions = document.getElementById('choiceOptions');
+
+            choicePrompt.textContent = scene.prompt;
+            choiceOptions.innerHTML = '';
+
+            scene.options.forEach((option, index) => {
+                const btn = document.createElement('button');
+                btn.className = 'choice-option';
+                btn.innerHTML = `
+                    ${option.text}
+                    ${option.effects ? `<span class="effects">${option.effects.join(' · ')}</span>` : ''}
+                `;
+                btn.onclick = () => makeChoice(option, index);
+                choiceOptions.appendChild(btn);
+            });
+
+            choicePanel.classList.add('active');
+        }
+
+        // 做出选择
+        function makeChoice(option, index) {
+            const choicePanel = document.getElementById('choicePanel');
+            choicePanel.classList.remove('active');
+
+            gameState.currentRoute = option.route || 'main';
+
+            // 显示通知
+            if (option.effects && option.effects.length > 0) {
+                showNotification(option.effects.join(' · '));
+            }
+
+            // 继续到下一个场景
+            currentSceneIndex++;
+            if (currentSceneIndex < exampleScenes.length) {
+                showScene(currentSceneIndex);
+            }
+        }
+
+        // 点击继续
+        function advanceDialogue() {
+            if (isTyping) {
+                // 跳过打字动画
+                clearTimeout(typingTimeout);
+                const scene = exampleScenes[currentSceneIndex];
+                document.getElementById('dialogueContent').textContent = scene.content;
+                isTyping = false;
+                document.getElementById('continueHint').style.display = 'flex';
+                return;
+            }
+
+            currentSceneIndex++;
+            if (currentSceneIndex < exampleScenes.length) {
+                showScene(currentSceneIndex);
+            } else {
+                showNotification('本章完结');
+            }
+        }
+
+        // ==================== 菜单功能 ====================
+
+        function openMenu() {
+            document.getElementById('menuPanel').classList.add('active');
+        }
+
+        function closeMenu() {
+            document.getElementById('menuPanel').classList.remove('active');
+        }
+
+        function quickSave() {
+            // 这里应该调用API保存
+            showNotification('进度已保存');
+        }
+
+        function saveGame() {
+            quickSave();
+            closeMenu();
+        }
+
+        function loadGame() {
+            showNotification('加载存档功能开发中...');
+        }
+
+        function showLog() {
+            showNotification('对话记录功能开发中...');
+        }
+
+        function showSettings() {
+            showNotification('游戏设置功能开发中...');
+        }
+
+        // ==================== 工具功能 ====================
+
+        function toggleAuto() {
+            gameState.isAuto = !gameState.isAuto;
+            const btn = document.getElementById('autoBtn');
+            btn.style.background = gameState.isAuto ? 'var(--vermillion)' : '';
+            btn.style.color = gameState.isAuto ? 'var(--paper-light)' : '';
+            showNotification(gameState.isAuto ? '自动播放开启' : '自动播放关闭');
+        }
+
+        function toggleSkip() {
+            gameState.isSkipping = !gameState.isSkipping;
+            showNotification(gameState.isSkipping ? '快进模式' : '正常模式');
+        }
+
+        function showNotification(message) {
+            const el = document.getElementById('notification');
+            el.textContent = message;
+            el.classList.add('show');
+            setTimeout(() => el.classList.remove('show'), 2000);
+        }
+
+        // ==================== 场景转换 ====================
+
+        function transitionScene(callback) {
+            const transition = document.getElementById('sceneTransition');
+            transition.classList.add('active');
+
+            setTimeout(() => {
+                if (callback) callback();
+                transition.classList.remove('active');
+                transition.classList.add('out');
+                setTimeout(() => {
+                    transition.classList.remove('out');
+                }, 600);
+            }, 600);
+        }
+
+        // ==================== 事件监听 ====================
+
+        document.addEventListener('click', (e) => {
+            // 如果点击的不是按钮，继续对话
+            if (!e.target.closest('button') && !e.target.closest('.choice-panel')) {
+                advanceDialogue();
+            }
+        });
+
+        document.addEventListener('keydown', (e) => {
+            if (e.code === 'Space' || e.code === 'Enter') {
+                e.preventDefault();
+                advanceDialogue();
+            } else if (e.code === 'Escape') {
+                const menuPanel = document.getElementById('menuPanel');
+                const choicePanel = document.getElementById('choicePanel');
+
+                if (menuPanel.classList.contains('active')) {
+                    closeMenu();
+                } else if (choicePanel.classList.contains('active')) {
+                    // 不允许关闭选择面板
+                } else {
+                    openMenu();
+                }
+            } else if (e.code === 'KeyS') {
+                quickSave();
+            }
+        });
+
+        // ==================== 初始化 ====================
+
+        document.addEventListener('DOMContentLoaded', () => {
+            showScene(0);
+        });
+    </script>
+</body>
+</html>
