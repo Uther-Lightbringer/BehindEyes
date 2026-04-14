@@ -97,6 +97,26 @@
         .prompt-detail-row.expanded { display: table-row; }
         .prompt-detail-row td { padding: 0; background: #0d1a33; }
 
+        /* 知识图谱样式 */
+        .kg-content { display: none; }
+        .kg-content.active { display: block; }
+        .relation-node { display: inline-block; padding: 8px 16px; background: #0f3460; border-radius: 20px; margin: 4px; cursor: pointer; transition: all 0.3s; }
+        .relation-node:hover { background: #1a4a80; transform: scale(1.05); }
+        .relation-edge { display: flex; align-items: center; padding: 8px 12px; background: #0a1a3a; border-radius: 8px; margin: 8px 0; border-left: 3px solid; }
+        .relation-edge.positive { border-left-color: #50c878; }
+        .relation-edge.negative { border-left-color: #e94560; }
+        .relation-edge.neutral { border-left-color: #4a90d9; }
+        .summary-node { background: #0a1a3a; border-radius: 8px; padding: 12px; margin: 8px 0; border-left: 3px solid #4a90d9; }
+        .summary-node.novel { border-left-color: #e94560; }
+        .summary-node.volume { border-left-color: #ffd700; }
+        .summary-node.chapter { border-left-color: #50c878; }
+        .summary-node.section { border-left-color: #4a90d9; }
+        .summary-node.segment { border-left-color: #888; }
+        .ws-category { margin-bottom: 20px; }
+        .ws-category-title { color: #ffd700; font-weight: bold; margin-bottom: 10px; padding-bottom: 6px; border-bottom: 1px solid #333; }
+        .ws-item { background: #0a1a3a; border-radius: 6px; padding: 10px; margin: 6px 0; }
+        .ws-item-name { color: #fff; font-weight: bold; }
+        .ws-item-desc { color: #aaa; font-size: 13px; margin-top: 4px; }
         /* 评分分布图表 */
         .score-chart { display: flex; gap: 16px; justify-content: center; margin: 20px 0; }
         .score-col { text-align: center; }
@@ -141,6 +161,7 @@
         <div class="tabs">
             <button class="tab-btn active" data-tab="users">用户管理</button>
             <button class="tab-btn" data-tab="novels">小说管理</button>
+            <button class="tab-btn" data-tab="knowledge">知识图谱</button>
             <button class="tab-btn" data-tab="settings">生成设置</button>
             <button class="tab-btn" data-tab="prompts">Prompt 历史</button>
         </div>
@@ -167,6 +188,53 @@
                 </thead>
                 <tbody id="novelsBody"></tbody>
             </table>
+        </div>
+
+        <!-- 知识图谱 -->
+        <div class="tab-content" id="tab-knowledge">
+            <div style="background: #16213e; border-radius: 12px; padding: 16px; margin-bottom: 16px;">
+                <h4 style="color: #e94560; margin-bottom: 12px;">选择小说</h4>
+                <select id="kgNovelSelect" onchange="loadKnowledgeGraph()" style="padding: 10px; background: #0a1a3a; border: 1px solid #0f3460; border-radius: 8px; color: #fff; min-width: 300px;">
+                    <option value="">-- 选择小说 --</option>
+                </select>
+            </div>
+
+            <!-- 子标签页 -->
+            <div class="tabs" id="kgTabs" style="display:none;">
+                <button class="tab-btn active" data-kg-tab="relations">角色关系</button>
+                <button class="tab-btn" data-kg-tab="summary">摘要树</button>
+                <button class="tab-btn" data-kg-tab="settings">世界设定</button>
+            </div>
+
+            <!-- 角色关系图 -->
+            <div class="kg-content active" id="kg-relations" style="display:none;">
+                <div class="stat-card" style="margin-top: 16px;">
+                    <h4 style="color: #4a90d9; margin-bottom: 16px;">角色关系网络</h4>
+                    <div id="relationsLoading" class="loading"><div class="spinner"></div> 加载中...</div>
+                    <div id="relationsEmpty" class="empty-state" style="display:none;">暂无角色关系数据</div>
+                    <div id="relationsGraph" style="min-height: 400px; position: relative;"></div>
+                </div>
+            </div>
+
+            <!-- 摘要树 -->
+            <div class="kg-content" id="kg-summary" style="display:none;">
+                <div class="stat-card" style="margin-top: 16px;">
+                    <h4 style="color: #50c878; margin-bottom: 16px;">层级摘要树</h4>
+                    <div id="summaryLoading" class="loading"><div class="spinner"></div> 加载中...</div>
+                    <div id="summaryEmpty" class="empty-state" style="display:none;">暂无摘要数据</div>
+                    <div id="summaryTree" style="font-size: 14px;"></div>
+                </div>
+            </div>
+
+            <!-- 世界设定 -->
+            <div class="kg-content" id="kg-settings" style="display:none;">
+                <div class="stat-card" style="margin-top: 16px;">
+                    <h4 style="color: #ffd700; margin-bottom: 16px;">世界设定</h4>
+                    <div id="wsLoading" class="loading"><div class="spinner"></div> 加载中...</div>
+                    <div id="wsEmpty" class="empty-state" style="display:none;">暂无世界设定数据</div>
+                    <div id="wsCategories"></div>
+                </div>
+            </div>
         </div>
 
         <!-- 生成设置 -->
@@ -541,6 +609,11 @@
                 }).join('');
 
                 table.style.display = 'table';
+
+                // 更新知识图谱下拉框
+                const kgSelect = document.getElementById('kgNovelSelect');
+                kgSelect.innerHTML = '<option value="">-- 选择小说 --</option>' +
+                    novels.map(n => `<option value="${n.id}">${n.title}</option>`).join('');
             } catch (e) {
                 loading.innerHTML = '加载失败，请刷新重试';
             }
@@ -1098,6 +1171,206 @@
         function escapeHtml(text) {
             return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
         }
+
+        // ============================================================
+        // 知识图谱
+        // ============================================================
+        async function loadKnowledgeGraph() {
+            const novelId = document.getElementById('kgNovelSelect').value;
+            const tabs = document.getElementById('kgTabs');
+
+            if (!novelId) {
+                tabs.style.display = 'none';
+                document.getElementById('kg-relations').style.display = 'none';
+                document.getElementById('kg-summary').style.display = 'none';
+                document.getElementById('kg-settings').style.display = 'none';
+                return;
+            }
+
+            tabs.style.display = 'flex';
+            await Promise.all([
+                loadRelations(novelId),
+                loadSummary(novelId),
+                loadWorldSettings(novelId)
+            ]);
+        }
+
+        async function loadRelations(novelId) {
+            const loading = document.getElementById('relationsLoading');
+            const empty = document.getElementById('relationsEmpty');
+            const container = document.getElementById('relationsGraph');
+
+            loading.style.display = 'block';
+            empty.style.display = 'none';
+            container.innerHTML = '';
+
+            try {
+                const res = await fetch(`${API_BASE}/novel/${novelId}/knowledge-graph/relations`, { credentials: 'include' });
+                const data = await res.json();
+
+                loading.style.display = 'none';
+
+                if (!data.edges || data.edges.length === 0) {
+                    empty.style.display = 'block';
+                    return;
+                }
+
+                // 渲染节点
+                let html = '<div style="margin-bottom: 20px;"><strong style="color: #aaa;">角色：</strong>';
+                data.nodes.forEach(node => {
+                    html += `<span class="relation-node" onclick="filterRelations('${node.name}')">${node.name}</span>`;
+                });
+                html += '</div>';
+
+                // 渲染关系
+                html += '<div><strong style="color: #aaa;">关系列表：</strong>';
+                data.edges.forEach(edge => {
+                    const affClass = edge.affection > 0 ? 'positive' : (edge.affection < 0 ? 'negative' : 'neutral');
+                    const affColor = edge.affection > 0 ? '#50c878' : (edge.affection < 0 ? '#e94560' : '#4a90d9');
+                    html += `
+                        <div class="relation-edge ${affClass}">
+                            <span style="flex: 1;">${edge.source} ⟷ ${edge.target}</span>
+                            <span style="color: ${affColor}; margin: 0 12px;">${edge.type}</span>
+                            <span style="color: #888; font-size: 12px;">好感度: ${edge.affection}</span>
+                        </div>`;
+                });
+                html += '</div>';
+
+                html += `<div style="margin-top: 16px; color: #888; font-size: 13px;">共 ${data.total_relations} 条关系</div>`;
+                container.innerHTML = html;
+            } catch (e) {
+                loading.style.display = 'none';
+                empty.style.display = 'block';
+                console.error('加载关系失败', e);
+            }
+        }
+
+        function filterRelations(charName) {
+            // 简单实现：高亮相关关系
+            const edges = document.querySelectorAll('.relation-edge');
+            edges.forEach(edge => {
+                const text = edge.textContent;
+                if (text.includes(charName)) {
+                    edge.style.background = '#1a3055';
+                } else {
+                    edge.style.background = '#0a1a3a';
+                }
+            });
+        }
+
+        async function loadSummary(novelId) {
+            const loading = document.getElementById('summaryLoading');
+            const empty = document.getElementById('summaryEmpty');
+            const container = document.getElementById('summaryTree');
+
+            loading.style.display = 'block';
+            empty.style.display = 'none';
+            container.innerHTML = '';
+
+            try {
+                const res = await fetch(`${API_BASE}/novel/${novelId}/knowledge-graph/summary`, { credentials: 'include' });
+                const data = await res.json();
+
+                loading.style.display = 'none';
+
+                if (!data.summaries || data.summaries.length === 0) {
+                    empty.style.display = 'block';
+                    return;
+                }
+
+                // 按层级排序渲染
+                const levelOrder = ['novel', 'volume', 'chapter', 'section', 'segment'];
+                const summaries = data.summaries.sort((a, b) => {
+                    const aIdx = levelOrder.indexOf(a.level) || 99;
+                    const bIdx = levelOrder.indexOf(b.level) || 99;
+                    return aIdx - bIdx;
+                });
+
+                let html = '';
+                summaries.forEach(s => {
+                    const keywords = s.key_characters || [];
+                    html += `
+                        <div class="summary-node ${s.level}">
+                            <div style="color: #888; font-size: 12px; margin-bottom: 4px;">[${s.level}]</div>
+                            <div style="color: #fff; margin-bottom: 8px;">${escapeHtml(s.summary || '无摘要')}</div>
+                            ${keywords.length > 0 ? `<div style="color: #4a90d9; font-size: 12px;">角色: ${keywords.slice(0, 5).join(', ')}</div>` : ''}
+                        </div>`;
+                });
+
+                html += `<div style="margin-top: 16px; color: #888; font-size: 13px;">共 ${data.total_nodes} 个摘要节点</div>`;
+                container.innerHTML = html;
+            } catch (e) {
+                loading.style.display = 'none';
+                empty.style.display = 'block';
+                console.error('加载摘要失败', e);
+            }
+        }
+
+        async function loadWorldSettings(novelId) {
+            const loading = document.getElementById('wsLoading');
+            const empty = document.getElementById('wsEmpty');
+            const container = document.getElementById('wsCategories');
+
+            loading.style.display = 'block';
+            empty.style.display = 'none';
+            container.innerHTML = '';
+
+            try {
+                const res = await fetch(`${API_BASE}/novel/${novelId}/knowledge-graph/world-settings`, { credentials: 'include' });
+                const data = await res.json();
+
+                loading.style.display = 'none';
+
+                if (!data.settings || data.settings.length === 0) {
+                    empty.style.display = 'block';
+                    return;
+                }
+
+                const byCategory = data.by_category || {};
+                const categoryNames = {
+                    'location': '地点',
+                    'item': '物品',
+                    'concept': '概念',
+                    'ability': '能力'
+                };
+
+                let html = '';
+                for (const [cat, items] of Object.entries(byCategory)) {
+                    html += `<div class="ws-category">
+                        <div class="ws-category-title">${categoryNames[cat] || cat} (${items.length})</div>`;
+                    items.forEach(item => {
+                        html += `
+                            <div class="ws-item">
+                                <div class="ws-item-name">${escapeHtml(item.name)}</div>
+                                <div class="ws-item-desc">${escapeHtml(item.description || '无描述')}</div>
+                            </div>`;
+                    });
+                    html += '</div>';
+                }
+
+                html += `<div style="margin-top: 16px; color: #888; font-size: 13px;">共 ${data.total_settings} 个设定</div>`;
+                container.innerHTML = html;
+            } catch (e) {
+                loading.style.display = 'none';
+                empty.style.display = 'block';
+                console.error('加载世界设定失败', e);
+            }
+        }
+
+        // 知识图谱子标签切换
+        document.addEventListener('click', function(e) {
+            if (e.target.matches('[data-kg-tab]')) {
+                const tab = e.target.dataset.kgTab;
+
+                // 更新标签按钮状态
+                document.querySelectorAll('[data-kg-tab]').forEach(btn => btn.classList.remove('active'));
+                e.target.classList.add('active');
+
+                // 更新内容显示
+                document.querySelectorAll('.kg-content').forEach(content => content.style.display = 'none');
+                document.getElementById(`kg-${tab}`).style.display = 'block';
+            }
+        });
 
         // ============================================================
         // 初始化
