@@ -464,8 +464,8 @@
     </div>
 
     <script>
-        const API_BASE = '/api';
-        const API_ORIGIN = ''; // 用于图片等路径，走同源
+        const API_BASE = 'http://localhost:8000/api';
+        const API_ORIGIN = 'http://localhost:8000'; // 用于图片等路径
 
         // ===== 认证状态 =====
         let currentUser = null; // null = 未登录, { id, username, role } = 已登录
