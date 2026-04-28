@@ -76,4 +76,5 @@ novel-vn/data/images/
 *.gif
 
 # Internal docs (not for public)
-docs/superpowers/
+docs/
+CLAUDE.md
