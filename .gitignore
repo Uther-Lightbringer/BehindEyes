@@ -74,3 +74,6 @@ novel-vn/data/images/
 *.jpg
 *.png
 *.gif
+
+# Internal docs (not for public)
+docs/superpowers/
