@@ -16,6 +16,24 @@ Transform text novels into interactive visual novels. Experience stories from an
 - **Visual Novel Format** - Character sprites, backgrounds, and dialogue system
 - **Multiple LLM Support** - DeepSeek, OpenAI, MiniMax, Qwen, Zhipu AI
 
+## Screenshots
+
+| Start Page | Transfer From Novel |
+|---|---|
+| ![Start Page](img/开始页面.jpg) | ![Transfer From Novel](img/TransferFromNovel.png) |
+
+| World Map | World Map Preview |
+|---|---|
+| ![World Map](img/WorldMap.png) | ![World Map Preview](img/WorldMapPreview.png) |
+
+| Generate Worldview | |
+|---|---|
+| ![Generate Worldview](img/生成世界观.jpg) | |
+
+| Gameplay 1 | Gameplay 2 |
+|---|---|
+| ![Gameplay 1](img/PlayGame.png) | ![Gameplay 2](img/PlayGame2.png) |
+
 ## Quick Start
 
 ### Docker Compose (Recommended)
