@@ -74,6 +74,7 @@ novel-vn/data/images/
 *.jpg
 *.png
 *.gif
+!img/
 
 # Internal docs (not for public)
 docs/
